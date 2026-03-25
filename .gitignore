@@ -5,3 +5,4 @@
 *.woff
 *.woff2
 .DS_Store
+obj/banana.obj
