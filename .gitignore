@@ -6,6 +6,7 @@
 *.woff2
 .DS_Store
 obj/banana.obj
-assets/*.mp4
-assets/*.mov
-assets/*.MOV
+assets/**/*.mp4
+assets/**/*.mov
+assets/**/*.MOV
+assets/**/*.AVI
