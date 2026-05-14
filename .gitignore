@@ -10,3 +10,8 @@ assets/**/*.mp4
 assets/**/*.mov
 assets/**/*.MOV
 assets/**/*.AVI
+assets/3d/**/*.obj
+assets/3d/**/*.3ds
+assets/3d/**/*.3DS
+assets/3d/**/*.gsm
+assets/3d/**/*.mtl
