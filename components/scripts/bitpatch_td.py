@@ -3,9 +3,11 @@ bitpatch_td.py -- builds a "bit patch bay" COMP inside TouchDesigner.
 
 Run once from the TouchDesigner textport:
 
-    exec(open('/Users/shamansir/Workspace/touchdesigner/bitpatch_td.py').read())
+    p = '/Users/shamansir/Workspace/touchdesigner/components/scripts/bitpatch_td.py'
+    exec(open(p).read())
     build()          # creates /project1/bitpatch
     build_demo()     # same, plus a Video Device In and a Null already wired up
+    repair()         # update the code inside an existing one, keeping its patch
 
 Using it:
 
@@ -489,28 +491,46 @@ def onEdit(comp, row, col, val):
 # ---------------------------------------------------------------------------
 
 PAREXEC = '''
+def _menu_name(par):
+    """The selected menu entry as a string.
+
+    Par.eval() on a menu parameter is not reliably a string across builds, and
+    an int here silently KeyErrors inside presets(). menuIndex always is an int
+    we can look up ourselves, so go through that.
+    """
+    try:
+        return par.menuNames[par.menuIndex]
+    except Exception:
+        return str(par.eval())
+
+
 def onValueChange(par, prev):
     comp = par.owner
     lib = comp.op('lib').module
-    if par.name == 'Bits':
-        spec = comp.par.Spec.eval()
-        try:
-            lib.load_spec(comp, spec)
-        except Exception:
-            lib.load_preset(comp, 'identity')
-    elif par.name == 'Preset':
-        lib.load_preset(comp, par.eval())
+    try:
+        if par.name == 'Bits':
+            try:
+                lib.load_spec(comp, comp.par.Spec.eval())
+            except Exception:
+                lib.load_preset(comp, 'identity')
+        elif par.name == 'Preset':
+            lib.load_preset(comp, _menu_name(par))
+    except Exception as e:
+        print('bitpatch: %s change failed: %s' % (par.name, e))
     return
 
 
 def onPulse(par):
     comp = par.owner
     lib = comp.op('lib').module
-    if par.name == 'Applyspec':
-        lib.load_spec(comp, comp.par.Spec.eval())
-    elif par.name == 'Reload':
-        lib.rebuild_bay(comp)
-        comp.op('mask').cook(force=True)
+    try:
+        if par.name == 'Applyspec':
+            lib.load_spec(comp, comp.par.Spec.eval())
+        elif par.name == 'Reload':
+            lib.rebuild_bay(comp)
+            comp.op('mask').cook(force=True)
+    except Exception as e:
+        print('bitpatch: %s failed: %s' % (par.name, e))
     return
 '''
 
@@ -584,12 +604,7 @@ def build(dest=None, name='bitpatch'):
 
     pex = comp.create(parameterexecuteDAT, 'parexec')
     pex.text = PAREXEC
-    # OP paths in a node's parameters resolve relative to that node's parent,
-    # so '.' here is the base COMP the parexec lives in.
-    pex.par.op = '.'
-    pex.par.pars = 'Bits Preset Applyspec Reload'
-    pex.par.valuechange = True
-    pex.par.onpulse = True
+    _wire_parexec(comp, pex)
     pex.nodeX, pex.nodeY = -400, -300
 
     # -- TOP chain -----------------------------------------------------------
@@ -653,6 +668,86 @@ def build(dest=None, name='bitpatch'):
     print('  the node viewer IS the patch bay -- click cells there')
     print('  custom parameters (Bits, Preset, Patch Spec, Mix) are on the COMP')
     print('  it starts on the identity patch, which is a deliberate passthrough')
+    return comp
+
+
+def _wire_parexec(comp, pex):
+    """Point the Parameter Execute DAT at the COMP that owns the custom pars.
+
+    A bare '.' in the OPs field is a relative path that these OP-specifier
+    fields do not reliably resolve, and when it fails the DAT simply watches
+    nothing -- no error, no callbacks. An expression yielding the absolute path
+    is unambiguous, and it follows the COMP if it gets renamed or moved.
+    """
+    _try(pex, 'active', True)
+    _expr(pex, 'op', 'me.parent().path')
+    _try(pex, 'pars', 'Bits Preset Applyspec Reload')
+    _try(pex, 'valuechange', True)
+    _try(pex, 'onpulse', True)
+
+
+def diag(comp=None):
+    """Print what the parameter plumbing is actually resolving to."""
+    comp = comp or op('/project1/bitpatch')
+    pex = comp.op('parexec')
+    print('comp        : %s (%s)' % (comp.path, comp.type))
+    print('parexec     : %s' % (pex.path if pex else 'MISSING'))
+    if pex:
+        print('  active    : %r' % pex.par.active.eval())
+        print('  op raw    : %r  expr %r' % (pex.par.op.val, pex.par.op.expr))
+        print('  op eval   : %r' % pex.par.op.eval())
+        try:
+            print('  op -> OPs : %r' % [o.path for o in pex.par.op.evalOPs()])
+        except Exception as e:
+            print('  op -> OPs : FAILED (%s)' % e)
+        print('  pars      : %r' % pex.par.pars.eval())
+        print('  valuechange %r  onpulse %r'
+              % (pex.par.valuechange.eval(), pex.par.onpulse.eval()))
+        print('  errors    : %r' % pex.errors())
+    p = comp.par.Preset
+    print('Preset      : val %r  menuIndex %r  eval %r (%s)'
+          % (p.val, p.menuIndex, p.eval(), type(p.eval()).__name__))
+    print('  menuNames : %r' % (p.menuNames,))
+    print('Spec        : %r' % comp.par.Spec.eval())
+    print('patch DAT   : %d rows x %d cols' % (comp.op('patch').numRows,
+                                               comp.op('patch').numCols))
+    print('bay         : rows %r cols %r' % (comp.op('bay').par.rows.eval(),
+                                             comp.op('bay').par.cols.eval()))
+    return
+
+
+def preset(name, comp=None):
+    """Load a preset directly, bypassing the parameter callbacks entirely."""
+    comp = comp or op('/project1/bitpatch')
+    comp.op('lib').module.load_preset(comp, name)
+    comp.par.Preset.val = name
+    print('loaded %r -> %s' % (name, comp.par.Spec.eval()))
+    return comp
+
+
+def repair(comp=None):
+    """Update the scripts inside an EXISTING bitpatch without rebuilding it.
+
+    Use this on a COMP you already saved as a .tox and wired into a project --
+    build() would destroy and replace it, losing your current patch. This only
+    rewrites the code DATs, so the patch table, parameters and connections
+    survive.
+    """
+    comp = comp or op('/project1/bitpatch')
+    if comp is None:
+        raise RuntimeError('no bitpatch COMP given or found at /project1/bitpatch')
+    for name, text in (('lib', LIB), ('mask_cb', MASK_CB), ('shader', SHADER),
+                       ('bay_cb', BAY_CB), ('parexec', PAREXEC)):
+        d = comp.op(name)
+        if d is None:
+            print('  missing %s, skipped' % name)
+            continue
+        d.text = text
+    if comp.op('parexec'):
+        _wire_parexec(comp, comp.op('parexec'))
+    comp.op('lib').module.rebuild_bay(comp)
+    comp.op('mask').cook(force=True)
+    print('repaired %s' % comp.path)
     return comp
 
 
