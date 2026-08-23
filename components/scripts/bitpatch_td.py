@@ -9,6 +9,11 @@ Run once from the TouchDesigner textport:
     build_demo()     # same, plus a Video Device In and a Null already wired up
     repair()         # update the code inside an existing one, keeping its patch
 
+repair(), diag() and preset() locate the COMP by its contents, not by name, so
+renaming it is fine. Pass one explicitly to disambiguate:
+
+    repair(op('/project1/bitpatch_v2'))
+
 Using it:
 
     Feed anything into the COMP's input and take the result off its output.
@@ -182,6 +187,19 @@ def bits_of(comp):
     return int(comp.par.Bits.eval())
 
 
+def menu_name(par):
+    """The selected menu entry as a string.
+
+    Par.eval() on a menu parameter is not dependably a string across builds,
+    and an int here silently KeyErrors inside presets(). menuIndex always is
+    an int we can look up ourselves, so go through that.
+    """
+    try:
+        return par.menuNames[par.menuIndex]
+    except Exception:
+        return str(par.eval())
+
+
 def read_matrix(comp):
     bits = bits_of(comp)
     nsrc = len(source_list(bits))
@@ -201,7 +219,67 @@ def write_matrix(comp, mat):
         for j, v in enumerate(mat[b]):
             dat[b, j] = str(v)
     comp.par.Spec.val = matrix_to_spec(mat, bits)
+    write_labeled(comp, mat)
     comp.op('mask').cook(force=True)
+
+
+def write_labeled(comp, mat):
+    """Mirror the matrix into a self-describing table for the COMP's DAT out.
+
+    Same 0/1 values, plus a header row of source names and a leading column of
+    output-bit names, so anything downstream can index it by label instead of
+    having to know source_list()'s ordering.
+    """
+    dat = comp.op('patch_labeled')
+    if dat is None:
+        return
+    bits = bits_of(comp)
+    srcs = source_list(bits)
+    dat.clear()
+    dat.appendRow(['outbit'] + [source_label(s) for s in srcs])
+    for b in range(bits - 1, -1, -1):        # highest bit first, like the grid
+        dat.appendRow(['out%d' % b] + [str(v) for v in mat[b]])
+
+
+def cell_target(comp, name, index=None):
+    """Map a MIDI channel to a (out_bit, source_index) cell, or None.
+
+    Two conventions, tried in this order:
+      by name      'b3_i5', 'b0_p'  -- output bit 3, source i5
+      by position  channel index i  -- row-major, i = out_bit * nsources + src
+    Naming is what you want for hand-wired controls; position is what you want
+    when a grid controller's pads already come in as an ordered block.
+    """
+    bits = bits_of(comp)
+    srcs = source_list(bits)
+    if name and '_' in name:
+        head, _, tail = name.partition('_')
+        if head.startswith('b') and head[1:].isdigit():
+            b = int(head[1:])
+            for j, s in enumerate(srcs):
+                if source_label(s) == tail and b < bits:
+                    return b, j
+            return None
+    if index is None:
+        return None
+    b, j = divmod(int(index), len(srcs))
+    return (b, j) if b < bits else None
+
+
+def set_cell(comp, out_bit, src_index, value):
+    """Returns True if the matrix actually changed."""
+    mat = read_matrix(comp)
+    value = 1 if value else 0
+    if mat[out_bit][src_index] == value:
+        return False
+    mat[out_bit][src_index] = value
+    write_matrix(comp, mat)
+    return True
+
+
+def refresh_bay(comp):
+    """Redraw the grid without resizing it."""
+    comp.op('bay').par.reset.pulse()
 
 
 def toggle(comp, out_bit, src_index):
@@ -491,19 +569,6 @@ def onEdit(comp, row, col, val):
 # ---------------------------------------------------------------------------
 
 PAREXEC = '''
-def _menu_name(par):
-    """The selected menu entry as a string.
-
-    Par.eval() on a menu parameter is not reliably a string across builds, and
-    an int here silently KeyErrors inside presets(). menuIndex always is an int
-    we can look up ourselves, so go through that.
-    """
-    try:
-        return par.menuNames[par.menuIndex]
-    except Exception:
-        return str(par.eval())
-
-
 def onValueChange(par, prev):
     comp = par.owner
     lib = comp.op('lib').module
@@ -514,7 +579,7 @@ def onValueChange(par, prev):
             except Exception:
                 lib.load_preset(comp, 'identity')
         elif par.name == 'Preset':
-            lib.load_preset(comp, _menu_name(par))
+            lib.load_preset(comp, lib.menu_name(par))
     except Exception as e:
         print('bitpatch: %s change failed: %s' % (par.name, e))
     return
@@ -531,6 +596,50 @@ def onPulse(par):
             comp.op('mask').cook(force=True)
     except Exception as e:
         print('bitpatch: %s failed: %s' % (par.name, e))
+    return
+'''
+
+
+# ---------------------------------------------------------------------------
+# CHOP Execute DAT -- MIDI (or any CHOP) driving the grid
+# ---------------------------------------------------------------------------
+
+CHOP_EXEC = '''
+# Any CHOP wired into the COMP's CHOP input can flip grid cells.
+#
+# Channel -> cell mapping, see lib.cell_target():
+#   named     'b3_i5' -> output bit 3, source i5.  Rename channels with a
+#             MIDI In Map CHOP (or a Rename CHOP) and wire only what you need.
+#   positional  channel index i -> out_bit i // nsources, source i % nsources.
+#             For a pad grid that already arrives as one ordered block.
+#
+# MIDI Mode:
+#   toggle  flip the cell on each rising edge -- what momentary pads want,
+#           since they send 127 on press and 0 on release
+#   set     cell follows the value directly (>0.5 on), for latching controls
+
+
+def onValueChange(channel, sampleIndex, val, prev):
+    comp = me.parent()
+    if not comp.par.Midienable.eval():
+        return
+    lib = comp.op('lib').module
+    try:
+        t = lib.cell_target(comp, channel.name, channel.index)
+        if t is None:
+            return
+        b, j = t
+        if lib.menu_name(comp.par.Midimode) == 'toggle':
+            if val > 0.5 and (prev is None or prev <= 0.5):
+                lib.toggle(comp, b, j)
+            else:
+                return
+        else:
+            if not lib.set_cell(comp, b, j, val > 0.5):
+                return
+        lib.refresh_bay(comp)
+    except Exception as e:
+        print('bitpatch: MIDI %s failed: %s' % (channel.name, e))
     return
 '''
 
@@ -658,6 +767,9 @@ def build(dest=None, name='bitpatch'):
     bay.par.x, bay.par.y = 0, 0
     comp.par.w, comp.par.h = bay_w, bay_h
 
+    # -- DAT output and MIDI input -------------------------------------------
+    _ensure_extras(comp)
+
     # -- initial state -------------------------------------------------------
     m = lib.module
     m.load_preset(comp, 'identity')
@@ -669,6 +781,59 @@ def build(dest=None, name='bitpatch'):
     print('  custom parameters (Bits, Preset, Patch Spec, Mix) are on the COMP')
     print('  it starts on the identity patch, which is a deliberate passthrough')
     return comp
+
+
+def _page(comp, name='Bitpatch'):
+    for p in comp.customPages:
+        if p.name == name:
+            return p
+    return comp.appendCustomPage(name)
+
+
+def _ensure_extras(comp):
+    """Add the DAT output and the MIDI input, on a new or an existing COMP.
+
+    Split out of build() so repair() can retrofit them onto a bitpatch you
+    already have wired into a project and saved as a .tox.
+    """
+    page = _page(comp)
+
+    if not hasattr(comp.par, 'Midienable'):
+        t = page.appendToggle('Midienable', label='MIDI Enable')[0]
+        t.default = 1
+        t.val = 1
+    if not hasattr(comp.par, 'Midimode'):
+        m = page.appendMenu('Midimode', label='MIDI Mode')[0]
+        m.menuNames = ['toggle', 'set']
+        m.menuLabels = ['Toggle on rising edge', 'Set from value']
+        m.val = 'toggle'
+
+    lab = comp.op('patch_labeled')
+    if lab is None:
+        lab = comp.create(tableDAT, 'patch_labeled')
+        lab.clear()
+        lab.nodeX, lab.nodeY = 0, -400
+    if comp.op('outdat') is None:
+        o = comp.create(outDAT, 'outdat')
+        o.nodeX, o.nodeY = 200, -400
+        o.inputConnectors[0].connect(lab)
+
+    if comp.op('inchop') is None:
+        c = comp.create(inCHOP, 'inchop')
+        c.nodeX, c.nodeY = -400, -500
+    ce = comp.op('chopexec')
+    if ce is None:
+        ce = comp.create(chopexecuteDAT, 'chopexec')
+        ce.nodeX, ce.nodeY = -200, -500
+    ce.text = CHOP_EXEC
+    _try(ce, 'active', True)
+    _try(ce, 'chop', 'inchop')
+    _try(ce, 'channel', '*')
+    _try(ce, 'valuechange', True)
+
+    # repopulate the labeled table from whatever patch is currently loaded
+    m = comp.op('lib').module
+    m.write_labeled(comp, m.read_matrix(comp))
 
 
 def _wire_parexec(comp, pex):
@@ -686,9 +851,39 @@ def _wire_parexec(comp, pex):
     _try(pex, 'onpulse', True)
 
 
+def find(comp=None):
+    """Resolve the bitpatch COMP to work on.
+
+    Accepts an OP, a path string, or nothing. With nothing, searches for a COMP
+    that looks like a bitpatch (has the lib and bay children) rather than
+    assuming a name -- renaming the COMP is normal and should not break the
+    tooling. Ambiguity is reported instead of guessed at.
+    """
+    if comp is not None:
+        found = comp if hasattr(comp, 'path') else op(comp)
+        if found is None:
+            raise RuntimeError('no such operator: %r' % (comp,))
+        return found
+    hits = []
+    for base in (op('/project1'), root):
+        if base is None:
+            continue
+        for c in base.findChildren(type=COMP, depth=4):
+            if c.op('lib') and c.op('bay') and c.op('patch'):
+                if c not in hits:
+                    hits.append(c)
+    if not hits:
+        raise RuntimeError('no bitpatch COMP found; pass one, e.g. '
+                           "repair(op('/project1/bitpatch_v2'))")
+    if len(hits) > 1:
+        print('note: %d bitpatch COMPs found (%s), using the first'
+              % (len(hits), ', '.join(c.path for c in hits)))
+    return hits[0]
+
+
 def diag(comp=None):
     """Print what the parameter plumbing is actually resolving to."""
-    comp = comp or op('/project1/bitpatch')
+    comp = find(comp)
     pex = comp.op('parexec')
     print('comp        : %s (%s)' % (comp.path, comp.type))
     print('parexec     : %s' % (pex.path if pex else 'MISSING'))
@@ -718,7 +913,7 @@ def diag(comp=None):
 
 def preset(name, comp=None):
     """Load a preset directly, bypassing the parameter callbacks entirely."""
-    comp = comp or op('/project1/bitpatch')
+    comp = find(comp)
     comp.op('lib').module.load_preset(comp, name)
     comp.par.Preset.val = name
     print('loaded %r -> %s' % (name, comp.par.Spec.eval()))
@@ -733,9 +928,7 @@ def repair(comp=None):
     rewrites the code DATs, so the patch table, parameters and connections
     survive.
     """
-    comp = comp or op('/project1/bitpatch')
-    if comp is None:
-        raise RuntimeError('no bitpatch COMP given or found at /project1/bitpatch')
+    comp = find(comp)
     for name, text in (('lib', LIB), ('mask_cb', MASK_CB), ('shader', SHADER),
                        ('bay_cb', BAY_CB), ('parexec', PAREXEC)):
         d = comp.op(name)
@@ -745,6 +938,7 @@ def repair(comp=None):
         d.text = text
     if comp.op('parexec'):
         _wire_parexec(comp, comp.op('parexec'))
+    _ensure_extras(comp)
     comp.op('lib').module.rebuild_bay(comp)
     comp.op('mask').cook(force=True)
     print('repaired %s' % comp.path)
