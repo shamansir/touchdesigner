@@ -180,6 +180,14 @@ def presets(bits):
 PRESET_ORDER = ['identity', 'bitreverse', 'rotate', 'xorcolumn', 'xorrow',
                 'xorshift3', 'parityflip', 'invert', 'nibbleswap', 'noise', 'clear']
 
+# 'custom' is not a preset, it is a marker. Any hand edit (grid click, MIDI,
+# Apply Spec) parks the menu here, so re-picking the preset you were already on
+# is a real value change and fires the callback. Without it, editing the grid
+# away from `identity` and then choosing `identity` again does nothing at all.
+CUSTOM = 'custom'
+MENU_NAMES = [CUSTOM] + PRESET_ORDER
+MENU_LABELS = ['(custom / edited)'] + PRESET_ORDER
+
 
 # -- storage: the matrix lives in the patch Table DAT --------------------------
 
@@ -266,6 +274,20 @@ def cell_target(comp, name, index=None):
     return (b, j) if b < bits else None
 
 
+def mark_custom(comp):
+    """Park the Preset menu on 'custom' after a hand edit.
+
+    Setting it to 'custom' when it is already 'custom' is a no-op, and setting
+    it fires onValueChange, which the handler ignores for 'custom'. So this is
+    safe to call from anywhere that mutates the matrix by hand.
+    """
+    try:
+        if comp.par.Preset.val != CUSTOM:
+            comp.par.Preset.val = CUSTOM
+    except Exception:
+        pass
+
+
 def set_cell(comp, out_bit, src_index, value):
     """Returns True if the matrix actually changed."""
     mat = read_matrix(comp)
@@ -274,6 +296,7 @@ def set_cell(comp, out_bit, src_index, value):
         return False
     mat[out_bit][src_index] = value
     write_matrix(comp, mat)
+    mark_custom(comp)
     return True
 
 
@@ -286,6 +309,7 @@ def toggle(comp, out_bit, src_index):
     mat = read_matrix(comp)
     mat[out_bit][src_index] ^= 1
     write_matrix(comp, mat)
+    mark_custom(comp)
     return mat
 
 
@@ -293,16 +317,23 @@ def clear_row(comp, out_bit):
     mat = read_matrix(comp)
     mat[out_bit] = [0] * len(mat[out_bit])
     write_matrix(comp, mat)
+    mark_custom(comp)
     return mat
 
 
-def load_spec(comp, spec):
+def load_spec(comp, spec, mark=True):
     write_matrix(comp, spec_to_matrix(spec, bits_of(comp)))
     rebuild_bay(comp)
+    if mark:
+        mark_custom(comp)
 
 
 def load_preset(comp, name):
-    load_spec(comp, presets(bits_of(comp))[name])
+    if name == CUSTOM:
+        return          # a marker, not a patch -- nothing to load
+    load_spec(comp, presets(bits_of(comp))[name], mark=False)
+    if comp.par.Preset.val != name:
+        comp.par.Preset.val = name
 
 
 def rebuild_bay(comp):
@@ -574,10 +605,17 @@ def onValueChange(par, prev):
     lib = comp.op('lib').module
     try:
         if par.name == 'Bits':
-            try:
-                lib.load_spec(comp, comp.par.Spec.eval())
-            except Exception:
-                lib.load_preset(comp, 'identity')
+            # a named preset should follow the new bit depth (identity at 8
+            # bits becomes identity at 10); only a hand-edited patch has to be
+            # re-derived from its spec, which may not fit the new depth
+            cur = lib.menu_name(comp.par.Preset)
+            if cur != lib.CUSTOM:
+                lib.load_preset(comp, cur)
+            else:
+                try:
+                    lib.load_spec(comp, comp.par.Spec.eval())
+                except Exception:
+                    lib.load_preset(comp, 'identity')
         elif par.name == 'Preset':
             lib.load_preset(comp, lib.menu_name(par))
     except Exception as e:
@@ -666,13 +704,8 @@ def build(dest=None, name='bitpatch'):
     pbits.default = 8
     pbits.val = 8
 
-    ppre = page.appendMenu('Preset', label='Preset')[0]
-    names = ['identity', 'bitreverse', 'rotate', 'xorcolumn', 'xorrow',
-             'xorshift3', 'parityflip', 'invert', 'nibbleswap', 'noise', 'clear']
-    ppre.menuNames = names
-    ppre.menuLabels = names
-
-    pspec = page.appendStr('Spec', label='Patch Spec')[0]
+    page.appendMenu('Preset', label='Preset')   # entries filled by _ensure_extras
+    page.appendStr('Spec', label='Patch Spec')
     page.appendPulse('Applyspec', label='Apply Spec')
     page.appendPulse('Reload', label='Rebuild Bay')
 
@@ -790,6 +823,22 @@ def _page(comp, name='Bitpatch'):
     return comp.appendCustomPage(name)
 
 
+def _sync_preset_menu(comp):
+    """Fill the Preset menu, including the 'custom' marker entry.
+
+    Also retrofits it onto a COMP built before 'custom' existed. Prepending
+    keeps every existing name at a valid value.
+    """
+    m = comp.op('lib').module
+    p = comp.par.Preset
+    cur = p.val
+    p.menuNames = m.MENU_NAMES
+    p.menuLabels = m.MENU_LABELS
+    p.default = 'identity'
+    if cur not in m.MENU_NAMES:
+        p.val = m.CUSTOM
+
+
 def _ensure_extras(comp):
     """Add the DAT output and the MIDI input, on a new or an existing COMP.
 
@@ -797,11 +846,16 @@ def _ensure_extras(comp):
     already have wired into a project and saved as a .tox.
     """
     page = _page(comp)
+    _sync_preset_menu(comp)
 
     if not hasattr(comp.par, 'Midienable'):
-        t = page.appendToggle('Midienable', label='MIDI Enable')[0]
-        t.default = 1
-        t.val = 1
+        page.appendToggle('Midienable', label='MIDI Enable')
+    # off by default: an attached controller should not be able to rewrite the
+    # patch until you ask it to
+    comp.par.Midienable.default = 0
+    if comp.par.Midienable.eval():
+        comp.par.Midienable.val = 0
+        print('  note: MIDI Enable turned off (it is now off by default)')
     if not hasattr(comp.par, 'Midimode'):
         m = page.appendMenu('Midimode', label='MIDI Mode')[0]
         m.menuNames = ['toggle', 'set']
