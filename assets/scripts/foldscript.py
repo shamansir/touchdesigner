@@ -19,6 +19,46 @@ def onSetupParameters(scriptOp):
     return
 
 
+def onCook(scriptOp):
+    return onCook_v3(scriptOp)
+
+
+def onCook_v3(scriptOp):
+    M = int(scriptOp.par.Maxcount)
+    Nf = max(scriptOp.par.Count.eval(), 1.0)
+    span = max(Nf - 1.0, 1.0)
+    step = math.radians(scriptOp.par.Sweep.eval() / span)
+    k_mul = max(scriptOp.par.Endscale.eval(), 1e-6) ** (1.0 / span)
+    tx = scriptOp.par.Endtx.eval() / span
+    ty = scriptOp.par.Endty.eval() / span
+    px = scriptOp.par.Pivotx.eval()
+    py = scriptOp.par.Pivoty.eval()
+
+    scriptOp.clear()
+    ch = {n: scriptOp.appendChan(n) for n in ("tx", "ty", "rz", "sx", "sy", "u")}
+    scriptOp.numSamples = M  # constant -- never reallocates
+
+    x, y, ang, k = 0.0, 0.0, 0.0, 1.0
+
+    for i in range(M):
+        on = min(max(Nf - i, 0.0), 1.0)  # 1 inside, 0 outside, fractional at the edge
+
+        ch["tx"][i] = x
+        ch["ty"][i] = y
+        ch["rz"][i] = ang
+        ch["sx"][i] = k * on  # on == 0 -> degenerate quad, no pixels
+        ch["sy"][i] = k * on
+        ch["u"][i] = min(i, span) / span
+
+        dx, dy = x - px, y - py
+        ca, sa = math.cos(step), math.sin(step)
+        x = px + (dx * ca - dy * sa) * k_mul + tx
+        y = py + (dx * sa + dy * ca) * k_mul + ty
+        ang += math.degrees(step)
+        k *= k_mul
+    return
+
+
 def onCook_v2(scriptOp):
     M = int(scriptOp.par.Maxcount)
     Nf = max(scriptOp.par.Count.eval(), 1.0)
@@ -55,7 +95,7 @@ def onCook_v2(scriptOp):
     return
 
 
-def onCook(scriptOp):
+def onCook_v1(scriptOp):
     # N = int(scriptOp.par.Count)
     # step = math.radians(scriptOp.par.Rotate.eval())
     # k_mul = scriptOp.par.Scalestep.eval()
