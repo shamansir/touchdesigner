@@ -41,6 +41,7 @@ import os
 HERE = 'assets/scripts/hydra'
 SHADERS = f'{HERE}/shader'   # .frag files live here
 TOX_ROOT = 'components/hydra'   # exported .tox tree, one folder per group
+HYDRA_TAG = 'hydra'             # marks generated components; survives .tox save
 
 # image inputs per hydra function class; `source` is always input 0
 CLASS_INPUTS = {
@@ -166,11 +167,29 @@ def load_specs():
     return SLICE
 
 
+TIME_DEFAULT_EXPR = 'absTime.seconds'
+
+
+def uses_time(text):
+    return 'uniform float time' in text
+
+
+def time_exec_source():
+    """The Parameter Execute callbacks, embedded into each time-using component."""
+    path = os.path.join(project.folder, HERE, 'time_exec.py')
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        print(f'  !! no time_exec.py at {path}')
+        return ''
+
+
 def _uniforms(spec, text, par_exprs):
     """[(uniform name, (expr per component,))] in Vectors-page order."""
     out = []
-    if 'uniform float time' in text:
-        out.append(('time', ('absTime.seconds',)))
+    if uses_time(text):
+        out.append(('time', ('parent().par.Time',)))
     if 'uniform vec2 resolution' in text:
         out.append(('resolution', ('me.width', 'me.height')))
     for inp in spec['inputs']:
@@ -193,11 +212,14 @@ def build(spec, dest):
         old.destroy()
     comp = dest.create(baseCOMP, comp_name)
 
+    text = shader_text(name)
+    wants_time = uses_time(text)
+
     # --- custom parameters ----------------------------------------------------
     floats = [i for i in spec['inputs'] if i['type'] == 'float']
     vecs = [i for i in spec['inputs'] if i['type'].startswith('vec')]
     par_exprs = {}                      # hydra input name -> (expr per component,)
-    if floats or vecs:
+    if floats or vecs or wants_time:
         page = comp.appendCustomPage('Hydra')
         for inp in floats:
             p = page.appendFloat(par_name(inp['name']), label=inp['name'])[0]
@@ -213,9 +235,17 @@ def build(spec, dest):
                 p.default = p.val = float(v)
             par_exprs[inp['name']] = tuple(f'parent().par.{p.name}' for p in pars)
 
-    # --- internals ------------------------------------------------------------
-    text = shader_text(name)
+        if wants_time:
+            t = page.appendFloat('Time', label='time')[0]
+            t.default = 0.0
+            t.expr = TIME_DEFAULT_EXPR       # a parameter, not an input -- rarely
+            try:
+                t.startSection = True        # separator above, off the argument list
+            except AttributeError:
+                print('  !! Par has no startSection in this build')
+            page.appendPulse('Propagatetime', label='Propagate Time Expr')
 
+    # --- internals ------------------------------------------------------------
     dat = comp.create(textDAT, 'pixel')
     dat.par.file = f'{SHADERS}/{name}.frag'
     dat.par.syncfile = True
@@ -262,6 +292,25 @@ def build(spec, dest):
     for i, t in enumerate(in_tops):
         glsl.inputConnectors[i].connect(t)
 
+    if wants_time:
+        # embedded, not file-synced, so an exported .tox carries its own callback
+        pexec = comp.create(parameterexecuteDAT, 'time_exec')
+        pexec.nodeX, pexec.nodeY = -200, -450
+        pexec.text = time_exec_source()
+        target = find_par(pexec, 'op', 'ops', 'operators')
+        if target is not None:
+            target.val = '..'
+        which = find_par(pexec, 'pars', 'parameters', 'par')
+        if which is not None:
+            which.val = 'Propagatetime'
+        for cand in ('pulse', 'onpulse'):
+            p = pexec.par[cand] if cand in {x.name for x in pexec.pars()} else None
+            if p is not None:
+                p.val = True
+                break
+        else:
+            print(f'  !! {pexec.path}: no pulse toggle found')
+
     out = comp.create(outTOP, 'out')
     out.nodeX, out.nodeY = 250, 0
     out.inputConnectors[0].connect(glsl)
@@ -271,6 +320,7 @@ def build(spec, dest):
         viewer.val = './out'
 
     comp.color = GROUPS[kind][1]
+    comp.tags = {HYDRA_TAG, f'hydra:{name}', f'hydra:{kind}'}
 
     # --- uniforms -------------------------------------------------------------
     uniforms = _uniforms(spec, text, par_exprs)
@@ -345,6 +395,7 @@ def build_audio(dest):
     if viewer is not None:
         viewer.val = './out'
     comp.color = AUDIO_COLOR
+    comp.tags = {HYDRA_TAG, 'hydra:fft', 'hydra:audio'}
     print('hydra_fft: audio CHOP in, fft_0..fft_n + vol out')
     return comp
 
@@ -362,7 +413,8 @@ def clear(dest, components=True, annotations=True):
     """
     removed = []
     for child in list(dest.children):
-        if components and child.name.startswith('hydra_'):
+        if components and (HYDRA_TAG in child.tags
+                           or child.name.startswith('hydra_')):
             removed.append(child.name)
             child.destroy()
         elif annotations and is_annotate(child):
