@@ -274,6 +274,7 @@ def layout_groups(dest, specs, verbose=True):
         rows = (len(items) + COLS - 1) // COLS
         cols = min(len(items), COLS)
 
+        placed = []
         for i, spec in enumerate(items):
             comp = dest.op(f"hydra_{spec['name'].lower()}")
             if not comp:
@@ -281,6 +282,7 @@ def layout_groups(dest, specs, verbose=True):
             r, c = divmod(i, COLS)
             comp.nodeX = c * CELL_W
             comp.nodeY = top - r * CELL_H
+            placed.append(comp)
 
         note = dest.op(f'group_{kind.lower()}')
         if note:
@@ -289,18 +291,29 @@ def layout_groups(dest, specs, verbose=True):
         if verbose and kind == GROUP_ORDER[0]:
             print('annotateCOMP pars:', sorted(p.name for p in note.pars()))
 
-        title = find_par(note, 'title', 'header', 'name')
+        title = find_par(note, 'Title', 'Titletext', 'title', 'titletext', 'header')
         if title is not None:
             title.val = label
-        body = find_par(note, 'text', 'notes', 'body', 'message')
+        body = find_par(note, 'Text', 'text', 'Notes', 'body', 'message')
         if body is not None:
             body.val = f'hydra {label} -- {len(items)} functions'
 
         note.color = col
-        note.nodeX = -PAD
-        note.nodeY = top + PAD
-        note.nodeWidth = cols * CELL_W + PAD
-        note.nodeHeight = rows * CELL_H + PAD
+        for pattern in ('Fillcolor*', 'Bgcolor*', 'Color*'):
+            for p in note.pars(pattern):
+                if p.isFloat and p.name[-1] in 'rgb':
+                    p.val = col['rgb'.index(p.name[-1])]
+
+        # nodeY is the node's BOTTOM edge, height grows upward -- derive the
+        # rectangle from what was actually placed rather than from the grid
+        if placed:
+            x0 = min(c.nodeX for c in placed)
+            x1 = max(c.nodeX + c.nodeWidth for c in placed)
+            y0 = min(c.nodeY for c in placed)
+            y1 = max(c.nodeY + c.nodeHeight for c in placed)
+            note.nodeX, note.nodeY = x0 - PAD, y0 - PAD
+            note.nodeWidth = (x1 - x0) + 2 * PAD
+            note.nodeHeight = (y1 - y0) + 2 * PAD
 
         top -= rows * CELL_H + PAD * 3
     print('laid out', len(specs), 'components in', len(GROUP_ORDER), 'groups')
