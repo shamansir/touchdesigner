@@ -24,7 +24,15 @@ Argument resolution, per input:
 
 Run from the Textport once a Text DAT is synced to this file:
 
-    mod('/project1/hydra/build_hydra').build_all(op('/project1/hydra'))
+    b = mod('/project1/hydra/build_hydra')
+    b.build_all(op('/project1/hydra'))     # build (replaces same-named components)
+    b.rebuild(op('/project1/hydra'))       # wipe everything generated, then build
+    b.clear(op('/project1/hydra'))         # wipe only
+    b.layout_groups(op('/project1/hydra'), b.load_specs())   # re-arrange only
+
+`clear` and `rebuild` destroy every hydra_* component AND every Annotate COMP in
+the target container -- keep these in their own container, not next to work you
+care about.
 """
 
 import json
@@ -108,6 +116,22 @@ def find_par(o, *candidates):
             return o.par[c]
     print(f'  !! {o.path}: none of {candidates} in {sorted(names)}')
     return None
+
+
+def darken(rgb, amount=0.4):
+    """Scale value only -- multiplying RGB uniformly leaves hue and saturation."""
+    return tuple(c * (1.0 - amount) for c in rgb)
+
+
+def set_color_par(o, prefix, rgb):
+    """Set a 3-par colour tuplet like Fillcolorr/g/b. True if it existed."""
+    names = {p.name for p in o.pars()}
+    keys = [prefix + c for c in 'rgb']
+    if not all(k in names for k in keys):
+        return False
+    for k, v in zip(keys, rgb):
+        o.par[k].val = v
+    return True
 
 
 def set_order(o, index):
@@ -259,8 +283,41 @@ def build(spec, dest):
     return comp
 
 
+def is_annotate(o):
+    return getattr(o, 'OPType', '') == 'annotateCOMP' or o.name.startswith('group_')
+
+
+def clear(dest, components=True, annotations=True):
+    """Destroy generated ops in `dest`.
+
+    DESTRUCTIVE: removes every `hydra_*` component and every Annotate COMP in
+    that container, including annotations you added by hand. Scoped to `dest`,
+    so keep the hydra components in their own container.
+    """
+    removed = []
+    for child in list(dest.children):
+        if components and child.name.startswith('hydra_'):
+            removed.append(child.name)
+            child.destroy()
+        elif annotations and is_annotate(child):
+            removed.append(child.name)
+            child.destroy()
+    print(f'cleared {len(removed)} ops from {dest.path}')
+    return removed
+
+
+def rebuild(dest, specs=None):
+    """Wipe everything generated, then build it all again from the JSON."""
+    clear(dest)
+    return build_all(dest, specs)
+
+
 def layout_groups(dest, specs, verbose=True):
     """Arrange components by hydra doc group, each wrapped in an Annotate COMP."""
+    for child in list(dest.children):        # stale annotations from earlier runs
+        if is_annotate(child):
+            child.destroy()
+
     by_kind = {}
     for s in specs:
         by_kind.setdefault(s['type'], []).append(s)
@@ -284,9 +341,6 @@ def layout_groups(dest, specs, verbose=True):
             comp.nodeY = top - r * CELL_H
             placed.append(comp)
 
-        note = dest.op(f'group_{kind.lower()}')
-        if note:
-            note.destroy()
         note = dest.create(annotateCOMP, f'group_{kind.lower()}')
         if verbose and kind == GROUP_ORDER[0]:
             print('annotateCOMP pars:', sorted(p.name for p in note.pars()))
@@ -294,15 +348,19 @@ def layout_groups(dest, specs, verbose=True):
         title = find_par(note, 'Title', 'Titletext', 'title', 'titletext', 'header')
         if title is not None:
             title.val = label
-        body = find_par(note, 'Text', 'text', 'Notes', 'body', 'message')
+        body = find_par(note, 'Bodytext', 'Body', 'Text', 'Notes', 'message')
         if body is not None:
             body.val = f'hydra {label} -- {len(items)} functions'
 
-        note.color = col
-        for pattern in ('Fillcolor*', 'Bgcolor*', 'Color*'):
-            for p in note.pars(pattern):
-                if p.isFloat and p.name[-1] in 'rgb':
-                    p.val = col['rgb'.index(p.name[-1])]
+        note.color = col                      # header keeps the full group colour
+        if verbose and kind == GROUP_ORDER[0]:
+            print('annotate colour pars:',
+                  sorted(p.name for p in note.pars() if 'color' in p.name.lower()))
+        for prefix in ('Backcolor', 'Fillcolor', 'Bgcolor', 'Bodycolor'):
+            if set_color_par(note, prefix, darken(col, 0.4)):
+                break
+        else:
+            print(f'  !! {note.path}: no fill-colour par found for the body')
 
         # nodeY is the node's BOTTOM edge, height grows upward -- derive the
         # rectangle from what was actually placed rather than from the grid
