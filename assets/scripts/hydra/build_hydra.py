@@ -40,6 +40,7 @@ import os
 
 HERE = 'assets/scripts/hydra'
 SHADERS = f'{HERE}/shader'   # .frag files live here
+TOX_ROOT = 'components/hydra'   # exported .tox tree, one folder per group
 
 # image inputs per hydra function class; `source` is always input 0
 CLASS_INPUTS = {
@@ -446,7 +447,40 @@ def layout_groups(dest, specs, verbose=True):
     print('laid out', len(specs), 'components in', len(GROUP_ORDER), 'groups')
 
 
-def build_all(dest, specs=None, layout=True, audio=True):
+def members(specs):
+    """[(group kind, function name)] for everything that should exist."""
+    out = [(s['type'], s['name']) for s in specs]
+    for kind, extra in EXTRA_MEMBERS.items():
+        out += [(kind, m['name']) for m in extra]
+    return out
+
+
+def export_tox(dest, specs=None, root=None):
+    """Save each component to components/hydra/<group>/hydra_<name>.tox.
+
+    Overwrites whatever is there, so the tree always matches the last build.
+    """
+    specs = specs or load_specs()
+    root = root or os.path.join(project.folder, *TOX_ROOT.split('/'))
+
+    saved, missing = 0, []
+    for kind, name in members(specs):
+        comp = dest.op(f'hydra_{name.lower()}')
+        if not comp:
+            missing.append(name)
+            continue
+        folder = os.path.join(root, GROUPS[kind][0].lower())
+        os.makedirs(folder, exist_ok=True)
+        comp.save(os.path.join(folder, f'hydra_{name.lower()}.tox'))
+        saved += 1
+
+    print(f'saved {saved} .tox files under {root}')
+    if missing:
+        print('  not built, skipped:', ', '.join(missing))
+    return saved
+
+
+def build_all(dest, specs=None, layout=True, audio=True, tox=True):
     specs = specs or load_specs()
     for spec in specs:
         build(spec, dest)
@@ -454,4 +488,6 @@ def build_all(dest, specs=None, layout=True, audio=True):
         build_audio(dest)
     if layout:
         layout_groups(dest, specs)
+    if tox:
+        export_tox(dest, specs)
     print(f'built {len(specs)} components in {dest.path}')

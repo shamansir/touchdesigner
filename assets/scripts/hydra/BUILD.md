@@ -45,9 +45,13 @@ b.build_all(op('/project1/hydra'))    # build everything (replaces same-named)
 b.rebuild(op('/project1/hydra'))      # wipe all generated ops, then build
 b.clear(op('/project1/hydra'))        # wipe only
 b.build_audio(op('/project1/hydra'))  # just hydra_fft
+b.export_tox(op('/project1/hydra'))   # write the .tox tree
 b.layout_groups(op('/project1/hydra'), b.load_specs())   # re-arrange only
 b.build(spec, op('/project1/hydra'))  # a single component, from one spec dict
 ```
+
+`build_all` and `rebuild` take `layout=False`, `audio=False`, `tox=False` to skip
+those stages.
 
 > `clear` and `rebuild` destroy **every** `hydra_*` component and **every**
 > Annotate COMP in the target container, including annotations you added by
@@ -65,6 +69,32 @@ python3 assets/scripts/hydra/emit_frags.py           # rewrite shader/*.frag
 
 then `b.rebuild(...)` in TD. Or from the Textport:
 `mod('/project1/hydra/emit_frags').emit_all()`.
+
+## Exported .tox files
+
+Every build also writes each component to disk, one folder per group:
+
+```
+components/hydra/
+  source/    hydra_osc.tox, hydra_noise.tox, …
+  geometry/  hydra_rotate.tox, …
+  color/     …
+  blend/     …
+  modulate/  …
+  audio/     hydra_fft.tox
+```
+
+Existing files are overwritten, so the tree always matches the last build. Drag
+one into any project to use a single function without the builder.
+
+A `.tox` embeds its internals, including the shader **text** as it stood at save
+time — but the Text DATs keep their `file` + Sync to File pars, so a component
+dropped into another project re-reads `assets/scripts/hydra/shader/*.frag`
+*relative to that project's* `.toe`. Either keep the same folder layout, or turn
+Sync to File off in the exported copies to freeze the shaders.
+
+Renaming a function upstream leaves its old `.tox` behind — export only writes,
+it never deletes. Clear the tree by hand when that happens.
 
 ## What a generated component looks like
 
