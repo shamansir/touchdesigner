@@ -283,6 +283,66 @@ def build(spec, dest):
     return comp
 
 
+AUDIO_COLOR = (0.94, 0.38, 0.60)      # the docs' Audio pink
+
+
+def build_audio(dest):
+    """hydra_fft: a.fft[n] as a component. Audio CHOP in, fft_0..fft_n out."""
+    old = dest.op('hydra_fft')
+    if old:
+        old.destroy()
+    comp = dest.create(baseCOMP, 'hydra_fft')
+
+    page = comp.appendCustomPage('Hydra')
+    specs = [('Bins', 'bins', 4, 1, 8), ('Cutoff', 'cutoff', 2.0, 0.0, 20.0),
+             ('Scale', 'scale', 10.0, 0.01, 50.0), ('Smooth', 'smooth', 0.4, 0.0, 0.99),
+             ('Buffer', 'buffer size', 512, 128, 4096)]
+    for name, label, dflt, lo, hi in specs:
+        p = (page.appendInt(name, label=label)[0] if isinstance(dflt, int)
+             else page.appendFloat(name, label=label)[0])
+        p.default = p.val = dflt
+        p.normMin, p.normMax = lo, hi
+
+    audio = comp.create(inCHOP, 'audio')
+    audio.nodeX, audio.nodeY = -400, 0
+    set_order(audio, 0)
+
+    dat = comp.create(textDAT, 'fft_script')
+    dat.par.file = f'{HERE}/fft_chop.py'
+    dat.par.syncfile = True
+    dat.par.loadonstart = True
+    dat.nodeX, dat.nodeY = -200, -200
+
+    script = comp.create(scriptCHOP, 'fft')
+    script.nodeX, script.nodeY = 0, 0
+    cb = find_par(script, 'callbacks', 'dat', 'script')
+    if cb is not None:
+        cb.val = dat.name
+    script.inputConnectors[0].connect(audio)
+
+    setup = find_par(script, 'setuppars', 'setupparameters')
+    if setup is not None:
+        setup.pulse()
+
+    # bind the script's own pars to the component's, so users see one page
+    for name, _, _, _, _ in specs:
+        try:
+            script.par[name].expr = f'parent().par.{name}'
+        except Exception as e:
+            print(f'  !! could not bind {name} on {script.path}: {e}')
+
+    out = comp.create(outCHOP, 'out')
+    out.nodeX, out.nodeY = 250, 0
+    out.inputConnectors[0].connect(script)
+
+    viewer = find_par(comp, 'opviewer')
+    if viewer is not None:
+        viewer.val = './out'
+    comp.color = AUDIO_COLOR
+    print('hydra_fft: audio CHOP in, fft_0..fft_n + vol out')
+    return comp
+
+
 def is_annotate(o):
     return getattr(o, 'OPType', '') == 'annotateCOMP' or o.name.startswith('group_')
 
