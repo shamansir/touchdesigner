@@ -52,6 +52,24 @@ NAME_INPUTS = {
 def inputs_for(spec):
     return NAME_INPUTS.get(spec['name'], CLASS_INPUTS[spec['type']])
 
+
+# hydra's documentation groups are exactly its five GLSL classes. Colours are
+# eyeballed from the docs' underlines; `src` is a guess (that group is cropped
+# in the screenshot I worked from) -- adjust to taste, it is only cosmetic.
+GROUPS = {
+    'src':          ('Source',   (0.96, 0.62, 0.42)),   # orange
+    'coord':        ('Geometry', (0.95, 0.82, 0.42)),   # yellow
+    'color':        ('Color',    (0.71, 0.91, 0.33)),   # lime
+    'combine':      ('Blend',    (0.44, 0.90, 0.63)),   # green
+    'combineCoord': ('Modulate', (0.50, 0.91, 0.88)),   # cyan
+}
+
+GROUP_ORDER = ('src', 'coord', 'color', 'combine', 'combineCoord')
+
+CELL_W, CELL_H = 240, 200      # spacing between components
+COLS = 6                       # components per row within a group
+PAD = 80                       # annotation margin around a group
+
 # the slice, used when hydra-functions.json is not present yet
 SLICE = [
     {'name': 'osc', 'type': 'src', 'inputs': [
@@ -222,6 +240,8 @@ def build(spec, dest):
     if viewer is not None:
         viewer.val = './out'
 
+    comp.color = GROUPS[kind][1]
+
     # --- uniforms -------------------------------------------------------------
     uniforms = _uniforms(spec, text, par_exprs)
     glsl.seq.vec.numBlocks = max(len(uniforms), 1)
@@ -239,9 +259,57 @@ def build(spec, dest):
     return comp
 
 
-def build_all(dest, specs=None):
+def layout_groups(dest, specs, verbose=True):
+    """Arrange components by hydra doc group, each wrapped in an Annotate COMP."""
+    by_kind = {}
+    for s in specs:
+        by_kind.setdefault(s['type'], []).append(s)
+
+    top = 0
+    for kind in GROUP_ORDER:
+        items = by_kind.get(kind, [])
+        if not items:
+            continue
+        label, col = GROUPS[kind]
+        rows = (len(items) + COLS - 1) // COLS
+        cols = min(len(items), COLS)
+
+        for i, spec in enumerate(items):
+            comp = dest.op(f"hydra_{spec['name'].lower()}")
+            if not comp:
+                continue
+            r, c = divmod(i, COLS)
+            comp.nodeX = c * CELL_W
+            comp.nodeY = top - r * CELL_H
+
+        note = dest.op(f'group_{kind.lower()}')
+        if note:
+            note.destroy()
+        note = dest.create(annotateCOMP, f'group_{kind.lower()}')
+        if verbose and kind == GROUP_ORDER[0]:
+            print('annotateCOMP pars:', sorted(p.name for p in note.pars()))
+
+        title = find_par(note, 'title', 'header', 'name')
+        if title is not None:
+            title.val = label
+        body = find_par(note, 'text', 'notes', 'body', 'message')
+        if body is not None:
+            body.val = f'hydra {label} -- {len(items)} functions'
+
+        note.color = col
+        note.nodeX = -PAD
+        note.nodeY = top + PAD
+        note.nodeWidth = cols * CELL_W + PAD
+        note.nodeHeight = rows * CELL_H + PAD
+
+        top -= rows * CELL_H + PAD * 3
+    print('laid out', len(specs), 'components in', len(GROUP_ORDER), 'groups')
+
+
+def build_all(dest, specs=None, layout=True):
     specs = specs or load_specs()
-    for i, spec in enumerate(specs):
-        comp = build(spec, dest)
-        comp.nodeX, comp.nodeY = 250 * (i % 8), -250 * (i // 8)
+    for spec in specs:
+        build(spec, dest)
+    if layout:
+        layout_groups(dest, specs)
     print(f'built {len(specs)} components in {dest.path}')
