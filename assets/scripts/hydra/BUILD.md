@@ -45,13 +45,14 @@ b.build_all(op('/project1/hydra'))    # build everything (replaces same-named)
 b.rebuild(op('/project1/hydra'))      # wipe all generated ops, then build
 b.clear(op('/project1/hydra'))        # wipe only
 b.build_audio(op('/project1/hydra'))  # just hydra_fft
-b.export_tox(op('/project1/hydra'))   # write the .tox tree
+b.export_tox(op('/project1/hydra'))      # write the .tox tree
+b.export_palette(op('/project1/hydra'))  # write into the TD user palette
 b.layout_groups(op('/project1/hydra'), b.load_specs())   # re-arrange only
 b.build(spec, op('/project1/hydra'))  # a single component, from one spec dict
 ```
 
-`build_all` and `rebuild` take `layout=False`, `audio=False`, `tox=False` to skip
-those stages.
+`build_all` and `rebuild` take `layout=False`, `audio=False`, `tox=False`,
+`palette=False` to skip those stages.
 
 > `clear` and `rebuild` destroy **every** `hydra_*` component and **every**
 > Annotate COMP in the target container, including annotations you added by
@@ -95,6 +96,25 @@ Sync to File off in the exported copies to freeze the shaders.
 
 Renaming a function upstream leaves its old `.tox` behind — export only writes,
 it never deletes. Clear the tree by hand when that happens.
+
+## The TouchDesigner palette
+
+The same export also writes into the user palette, so the components show up
+under **My Components / Hydra / <Group> / hydra_<func>**:
+
+```python
+b.export_palette(op('/project1/hydra'))
+b.export_palette(op('/project1/hydra'), root='/some/other/Palette')
+```
+
+The palette is a plain folder tree — subfolders become categories. `palette_root()`
+resolves it per install, never hardcoded: `app.userPaletteFolder`, then
+`<app.configFolder>/Palette`, then `~/Documents/Derivative/Palette`, printing every
+candidate it tried if none exist. On macOS this usually lands at
+`~/Library/Application Support/Derivative/TouchDesigner<version>/Palette`, so it
+follows both the user and the TD version. Pass `root=` to override.
+
+**Refresh the Palette pane** after a build; it does not watch the folder.
 
 ## What a generated component looks like
 

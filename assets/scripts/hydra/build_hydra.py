@@ -455,8 +455,8 @@ def members(specs):
     return out
 
 
-def export_tox(dest, specs=None, root=None):
-    """Save each component to components/hydra/<group>/hydra_<name>.tox.
+def export_tox(dest, specs=None, root=None, group_case=str.lower):
+    """Save each component to <root>/<group>/hydra_<name>.tox.
 
     Overwrites whatever is there, so the tree always matches the last build.
     """
@@ -469,7 +469,7 @@ def export_tox(dest, specs=None, root=None):
         if not comp:
             missing.append(name)
             continue
-        folder = os.path.join(root, GROUPS[kind][0].lower())
+        folder = os.path.join(root, group_case(GROUPS[kind][0]))
         os.makedirs(folder, exist_ok=True)
         comp.save(os.path.join(folder, f'hydra_{name.lower()}.tox'))
         saved += 1
@@ -480,7 +480,30 @@ def export_tox(dest, specs=None, root=None):
     return saved
 
 
-def build_all(dest, specs=None, layout=True, audio=True, tox=True):
+def palette_root():
+    """The user palette folder -- what the Palette browser lists as My Components."""
+    config = getattr(app, 'configFolder', None)
+    candidates = [getattr(app, 'userPaletteFolder', None),
+                  os.path.join(config, 'Palette') if config else None,
+                  os.path.expanduser('~/Documents/Derivative/Palette')]
+    for c in candidates:
+        if c and os.path.isdir(c):
+            return c
+    fallback = os.path.expanduser('~/Documents/Derivative/Palette')
+    print(f'  !! no palette folder among {[c for c in candidates if c]}')
+    print(f'  !! creating {fallback} -- pass root=... if your palette is elsewhere')
+    return fallback
+
+
+def export_palette(dest, specs=None, root=None, section='Hydra'):
+    """Save into the user palette as My Components/Hydra/<Group>/hydra_<name>."""
+    root = os.path.join(root or palette_root(), section)
+    n = export_tox(dest, specs, root=root, group_case=lambda g: g)
+    print('  refresh the Palette pane to pick up changes')
+    return n
+
+
+def build_all(dest, specs=None, layout=True, audio=True, tox=True, palette=True):
     specs = specs or load_specs()
     for spec in specs:
         build(spec, dest)
@@ -490,4 +513,6 @@ def build_all(dest, specs=None, layout=True, audio=True, tox=True):
         layout_groups(dest, specs)
     if tox:
         export_tox(dest, specs)
+    if palette:
+        export_palette(dest, specs)
     print(f'built {len(specs)} components in {dest.path}')
