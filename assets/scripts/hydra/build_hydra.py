@@ -39,6 +39,7 @@ import json
 import os
 
 HERE = 'assets/scripts/hydra'
+SHADERS = f'{HERE}/shader'   # .frag files live here
 
 # image inputs per hydra function class; `source` is always input 0
 CLASS_INPUTS = {
@@ -70,9 +71,13 @@ GROUPS = {
     'color':        ('Color',    (0.71, 0.91, 0.33)),   # lime
     'combine':      ('Blend',    (0.44, 0.90, 0.63)),   # green
     'combineCoord': ('Modulate', (0.50, 0.91, 0.88)),   # cyan
+    'audio':        ('Audio',    (0.94, 0.38, 0.60)),   # pink
 }
 
-GROUP_ORDER = ('src', 'coord', 'color', 'combine', 'combineCoord')
+GROUP_ORDER = ('src', 'coord', 'color', 'combine', 'combineCoord', 'audio')
+
+# components that are not generated from hydra-functions.json, by group
+EXTRA_MEMBERS = {'audio': [{'name': 'fft', 'type': 'audio'}]}
 
 CELL_W, CELL_H = 240, 200      # spacing between components
 COLS = 6                       # components per row within a group
@@ -143,7 +148,7 @@ def set_order(o, index):
 
 def shader_text(name):
     """Read the .frag from disk to see which built-in uniforms it declares."""
-    path = os.path.join(project.folder, HERE, f'{name}.frag')
+    path = os.path.join(project.folder, SHADERS, f'{name}.frag')
     try:
         with open(path) as f:
             return f.read()
@@ -211,7 +216,7 @@ def build(spec, dest):
     text = shader_text(name)
 
     dat = comp.create(textDAT, 'pixel')
-    dat.par.file = f'{HERE}/{name}.frag'
+    dat.par.file = f'{SHADERS}/{name}.frag'
     dat.par.syncfile = True
     dat.par.loadonstart = True
     dat.nodeX, dat.nodeY = -200, -300
@@ -381,6 +386,10 @@ def layout_groups(dest, specs, verbose=True):
     by_kind = {}
     for s in specs:
         by_kind.setdefault(s['type'], []).append(s)
+    for kind, members in EXTRA_MEMBERS.items():          # only if actually built
+        present = [m for m in members if dest.op(f"hydra_{m['name'].lower()}")]
+        if present:
+            by_kind.setdefault(kind, []).extend(present)
 
     top = 0
     for kind in GROUP_ORDER:
@@ -437,10 +446,12 @@ def layout_groups(dest, specs, verbose=True):
     print('laid out', len(specs), 'components in', len(GROUP_ORDER), 'groups')
 
 
-def build_all(dest, specs=None, layout=True):
+def build_all(dest, specs=None, layout=True, audio=True):
     specs = specs or load_specs()
     for spec in specs:
         build(spec, dest)
+    if audio:
+        build_audio(dest)
     if layout:
         layout_groups(dest, specs)
     print(f'built {len(specs)} components in {dest.path}')

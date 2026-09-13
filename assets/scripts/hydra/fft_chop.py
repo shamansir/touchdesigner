@@ -87,6 +87,10 @@ def onCook(scriptOp):
     cutoff = float(scriptOp.par.Cutoff)
     scale = max(float(scriptOp.par.Scale), 1e-6)
 
+    # An audio input is Time Sliced and the Script CHOP inherits that, but this
+    # emits one analysis value per frame, so take control of the sample count.
+    scriptOp.isTimeSlice = False
+
     scriptOp.clear()
     chans = [scriptOp.appendChan(f'fft_{i}') for i in range(nbins)]
     vol_chan = scriptOp.appendChan('vol')

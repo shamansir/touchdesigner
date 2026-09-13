@@ -67,6 +67,9 @@ TEXTURE_ALIAS = {
 UTILS = ('_luminance', '_noise', '_rgbToHsv', '_hsvToRgb')
 
 
+SHADER_DIR = 'shader'      # .frag files and _utils.glsl live here
+
+
 def _here():
     """Directory of this script, whether run by python3 or as a TD DAT module."""
     try:
@@ -156,9 +159,10 @@ def emit(spec, utils):
 
 def emit_all(out_dir=None, json_path=None, utils_path=None, overwrite=True):
     here = _here()
-    out_dir = out_dir or here
+    out_dir = out_dir or os.path.join(here, SHADER_DIR)
     json_path = json_path or os.path.join(here, 'hydra-functions.json')
-    utils_path = utils_path or os.path.join(here, '_utils.glsl')
+    utils_path = utils_path or os.path.join(here, SHADER_DIR, '_utils.glsl')
+    os.makedirs(out_dir, exist_ok=True)
 
     with open(json_path) as f:
         specs = json.load(f)
