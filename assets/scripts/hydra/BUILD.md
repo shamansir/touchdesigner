@@ -126,8 +126,10 @@ hydra_osc/
   frequency_default   Constant CHOPs, feeding each In CHOP's fallback input
   pixel               Text DAT    file-synced to shader/<name>.frag
   glsl                GLSL TOP    the internals
+  time_exec           Parameter Execute DAT, time-using functions only
   out                 Out TOP     also the component's Operator Viewer
-  + custom page 'Hydra'
+  + custom page 'Hydra'       one parameter per argument
+  + custom page 'Time Sync'   time-using functions only
 ```
 
 **Arguments resolve in one of two ways.** Connect a CHOP to an argument's
@@ -146,8 +148,10 @@ order, set through each In OP's *Connect Order*.
 
 The 10 functions whose shader reads `time` — `osc`, `noise`, `voronoi`,
 `gradient`, `rotate`, `scroll`, `scrollX`, `scrollY`, `modulateScrollX`,
-`modulateScrollY` — get a **time** parameter holding the expression
-`absTime.seconds`. It is a parameter and not an input, since rewiring it is rare;
+`modulateScrollY` — get a **Time Sync** page carrying a **time** parameter that
+holds the expression `absTime.seconds`. It lives on its own page so the `Hydra`
+page stays purely the function's arguments. It is a parameter and not an input,
+since rewiring it is rare;
 replace the expression to run a chain on a Timer CHOP, a scrubbed value, a
 slowed clock, or anything else.
 

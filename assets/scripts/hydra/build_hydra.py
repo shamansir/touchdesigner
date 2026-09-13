@@ -219,7 +219,7 @@ def build(spec, dest):
     floats = [i for i in spec['inputs'] if i['type'] == 'float']
     vecs = [i for i in spec['inputs'] if i['type'].startswith('vec')]
     par_exprs = {}                      # hydra input name -> (expr per component,)
-    if floats or vecs or wants_time:
+    if floats or vecs:
         page = comp.appendCustomPage('Hydra')
         for inp in floats:
             p = page.appendFloat(par_name(inp['name']), label=inp['name'])[0]
@@ -235,15 +235,12 @@ def build(spec, dest):
                 p.default = p.val = float(v)
             par_exprs[inp['name']] = tuple(f'parent().par.{p.name}' for p in pars)
 
-        if wants_time:
-            t = page.appendFloat('Time', label='time')[0]
-            t.default = 0.0
-            t.expr = TIME_DEFAULT_EXPR       # a parameter, not an input -- rarely
-            try:
-                t.startSection = True        # separator above, off the argument list
-            except AttributeError:
-                print('  !! Par has no startSection in this build')
-            page.appendPulse('Propagatetime', label='Propagate Time Expr')
+    if wants_time:                      # its own page -- 'Hydra' stays arguments only
+        tpage = comp.appendCustomPage('Time Sync')
+        t = tpage.appendFloat('Time', label='time')[0]
+        t.default = 0.0
+        t.expr = TIME_DEFAULT_EXPR      # a parameter, not an input -- rarely rewired
+        tpage.appendPulse('Propagatetime', label='Propagate Time Expr')
 
     # --- internals ------------------------------------------------------------
     dat = comp.create(textDAT, 'pixel')
