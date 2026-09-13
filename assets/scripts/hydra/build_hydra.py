@@ -41,6 +41,17 @@ CLASS_INPUTS = {
     'combineCoord': ['source', 'modulator'],   # modulator is hydra's _c0
 }
 
+# functions whose class says "no image input" but whose body samples a texture:
+# `src` takes an external TOP, `prev` takes the feedback of the chain's output
+NAME_INPUTS = {
+    'src':  ['source'],
+    'prev': ['source'],
+}
+
+
+def inputs_for(spec):
+    return NAME_INPUTS.get(spec['name'], CLASS_INPUTS[spec['type']])
+
 # the slice, used when hydra-functions.json is not present yet
 SLICE = [
     {'name': 'osc', 'type': 'src', 'inputs': [
@@ -107,7 +118,7 @@ def load_specs():
     return SLICE
 
 
-def _uniforms(spec, text):
+def _uniforms(spec, text, par_exprs):
     """[(uniform name, (expr per component,))] in Vectors-page order."""
     out = []
     if 'uniform float time' in text:
@@ -115,10 +126,13 @@ def _uniforms(spec, text):
     if 'uniform vec2 resolution' in text:
         out.append(('resolution', ('me.width', 'me.height')))
     for inp in spec['inputs']:
-        if inp['type'] != 'float':
-            continue                      # sampler2D / vec4 are handled as TOP inputs
-        # the In CHOP always has a channel: either connected, or the Constant default
-        out.append((inp['name'], (f"op('{inp['name']}')[0].eval()",)))
+        n = inp['name']
+        if inp['type'] == 'float':
+            # the In CHOP always has a channel: connected, or the Constant default
+            out.append((n, (f"op('{n}')[0].eval()",)))
+        elif n in par_exprs:              # vec2/3/4 -- straight from its parameters
+            out.append((n, par_exprs[n]))
+        # sampler2D inputs became TOP inputs via #define in the shader
     return out
 
 
@@ -133,13 +147,23 @@ def build(spec, dest):
 
     # --- custom parameters ----------------------------------------------------
     floats = [i for i in spec['inputs'] if i['type'] == 'float']
-    if floats:
+    vecs = [i for i in spec['inputs'] if i['type'].startswith('vec')]
+    par_exprs = {}                      # hydra input name -> (expr per component,)
+    if floats or vecs:
         page = comp.appendCustomPage('Hydra')
         for inp in floats:
             p = page.appendFloat(par_name(inp['name']), label=inp['name'])[0]
             d = float(inp['default'] or 0)
             p.default = p.val = d
             p.normMin, p.normMax = min(0.0, 2 * d), max(1.0, 2 * d)
+        for inp in vecs:                # only `sum` today; no CHOP input for these
+            width = int(inp['type'][3:])
+            pars = page.appendFloat(par_name(inp['name']), label=inp['name'],
+                                    size=width)
+            defaults = inp['default'] or [0] * width
+            for p, v in zip(pars, defaults):
+                p.default = p.val = float(v)
+            par_exprs[inp['name']] = tuple(f'parent().par.{p.name}' for p in pars)
 
     # --- internals ------------------------------------------------------------
     text = shader_text(name)
@@ -151,7 +175,7 @@ def build(spec, dest):
     dat.nodeX, dat.nodeY = -200, -300
 
     in_tops = []
-    for i, label in enumerate(CLASS_INPUTS[kind]):
+    for i, label in enumerate(inputs_for(spec)):
         t = comp.create(inTOP, label)
         t.nodeX, t.nodeY = -600, -160 * i
         set_order(t, i)                    # image inputs come first
@@ -199,7 +223,7 @@ def build(spec, dest):
         viewer.val = './out'
 
     # --- uniforms -------------------------------------------------------------
-    uniforms = _uniforms(spec, text)
+    uniforms = _uniforms(spec, text, par_exprs)
     glsl.seq.vec.numBlocks = max(len(uniforms), 1)
     for i, (uname, exprs) in enumerate(uniforms):
         glsl.par[f'vec{i}name'] = uname
