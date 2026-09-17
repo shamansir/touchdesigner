@@ -155,10 +155,12 @@ class follows its input, so setting the sources sets the chain.
 Retune a whole container at once:
 
 ```python
-b.set_resolution(op('/project1/hydra'), 1920, 1080)
+b.set_resolution(op('/project1/hydra'), 1280, 1280)
 ```
 
-Change `DEFAULT_RES` in `build_hydra.py` to make it the default for new builds.
+**A non-commercial licence caps output at 1280×1280**, so that is the practical
+ceiling here; `set_resolution` warns when you ask for more. Change `DEFAULT_RES`
+in `build_hydra.py` to move the default for new builds.
 
 Anything else feeding a chain — a Constant TOP seeding a Feedback TOP, for
 instance — has to be set to match by hand, or it resamples.

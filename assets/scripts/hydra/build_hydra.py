@@ -43,6 +43,7 @@ SHADERS = f'{HERE}/shader'   # .frag files live here
 TOX_ROOT = 'components/hydra'   # exported .tox tree, one folder per group
 HYDRA_TAG = 'hydra'             # marks generated components; survives .tox save
 DEFAULT_RES = (1280, 720)       # source components; everything else follows its input
+NONCOMMERCIAL_MAX = 1280        # the free licence caps output at 1280x1280
 
 # image inputs per hydra function class; `source` is always input 0
 CLASS_INPUTS = {
@@ -421,6 +422,9 @@ def set_resolution(dest, width, height):
             pars[0].val, pars[1].val = width, height
             n += 1
     print(f'set {n} source component(s) to {width}x{height}')
+    if max(width, height) > NONCOMMERCIAL_MAX:
+        print(f'  !! over {NONCOMMERCIAL_MAX}px -- a non-commercial licence will '
+              f'clamp this')
     return n
 
 
