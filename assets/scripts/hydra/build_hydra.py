@@ -411,6 +411,65 @@ def build_audio(dest):
     return comp
 
 
+LIBRARY_PATH = None        # remembered by build_all, so spawn() needs no argument
+
+
+def library(hint=None):
+    """The container holding the generated components."""
+    if hint is not None:
+        return hint
+    if LIBRARY_PATH and op(LIBRARY_PATH):
+        return op(LIBRARY_PATH)
+    try:                                   # nothing remembered: go looking
+        found = root.findChildren(tags=[HYDRA_TAG], maxDepth=4)
+    except Exception:
+        found = []
+    if found:
+        return found[0].parent()
+    print('  !! no hydra library found -- pass library=op(...)')
+    return None
+
+
+def unique_name(dest, base):
+    if not dest.op(base):
+        return base
+    i = 1
+    while dest.op(f'{base}{i}'):
+        i += 1
+    return f'{base}{i}'
+
+
+def spawn(names, dest=None, lib=None, postfix='', spacing=200, x=0, y=0):
+    """Copy generated components by name, e.g. spawn(['osc', 'osc', 'rotate']).
+
+    Repeats are fine -- each copy gets a numeric suffix so names stay unique.
+    `postfix` goes before that suffix: postfix='_a' gives hydra_osc_a.
+
+    Copies land in `dest`, defaulting to the library's parent rather than the
+    library itself: copies inherit the `hydra` tag, and clear()/rebuild() would
+    destroy them along with the originals if they sat in the same container.
+    """
+    lib = library(lib)
+    if lib is None:
+        return []
+    dest = dest or lib.parent()
+
+    made, missing = [], []
+    for i, name in enumerate(names):
+        original = lib.op(f'hydra_{name.lower()}')
+        if not original:
+            missing.append(name)
+            continue
+        copy = dest.copy(original, name=unique_name(dest, f'hydra_{name.lower()}{postfix}'))
+        copy.nodeX, copy.nodeY = x + spacing * len(made), y
+        made.append(copy)
+
+    print(f'spawned {len(made)} in {dest.path}: ' + ', '.join(c.name for c in made))
+    if missing:
+        print('  !! not in the library:', ', '.join(missing))
+    return made
+
+
 def set_resolution(dest, width, height):
     """Retune every generated source component's output resolution."""
     n = 0
@@ -584,6 +643,8 @@ def export_palette(dest, specs=None, root=None, section='Hydra'):
 
 
 def build_all(dest, specs=None, layout=True, audio=True, tox=True, palette=True):
+    global LIBRARY_PATH
+    LIBRARY_PATH = dest.path           # so spawn() can find the library later
     specs = specs or load_specs()
     for spec in specs:
         build(spec, dest)

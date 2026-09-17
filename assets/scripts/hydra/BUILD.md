@@ -50,6 +50,7 @@ b.export_tox(op('/project1/hydra'))      # write the .tox tree
 b.export_palette(op('/project1/hydra'))  # write into the TD user palette
 b.layout_groups(op('/project1/hydra'), b.load_specs())   # re-arrange only
 b.build(spec, op('/project1/hydra'))  # a single component, from one spec dict
+b.spawn(['osc', 'osc', 'rotate', 'scale'])               # copies to patch with
 ```
 
 `build_all` and `rebuild` take `layout=False`, `audio=False`, `tox=False`,
@@ -144,6 +145,39 @@ for hydra's array arguments. CHOPs are usually the better tool.
 
 **Connector order** is image inputs first, then arguments in hydra's declared
 order, set through each In OP's *Connect Order*.
+
+## Spawning copies
+
+The generated components are a library — patch with copies of them, not with the
+originals:
+
+```python
+b.spawn(['osc', 'osc', 'rotate', 'scale'])
+b.spawn(['osc', 'rotate'], postfix='_a')       # hydra_osc_a, hydra_rotate_a
+b.spawn(['noise'], dest=op('/project1/sketch2'))
+b.spawn(['osc'], lib=op('/some/other/hydra'))  # a different library
+```
+
+Repeats in the list are fine — each copy gets a numeric suffix, so
+`['osc', 'osc']` yields `hydra_osc` and `hydra_osc1`. `postfix` lands before that
+suffix.
+
+`spawn` returns the created components, so you can wire them up directly:
+
+```python
+a, b_, r = b.spawn(['osc', 'noise', 'modulate'])
+r.inputConnectors[0].connect(a)
+r.inputConnectors[1].connect(b_)
+```
+
+**Where copies land.** `dest` defaults to the *parent* of the library, not the
+library itself — copies inherit the `hydra` tag, so a `clear()` or `rebuild()` on
+the library container would destroy them along with the originals. Keep them
+apart.
+
+**Which library.** `build_all` remembers its target, so `spawn` usually needs no
+`lib`. After a TD restart that memory is gone and it searches the project for
+tagged components instead; pass `lib=` if it guesses wrong.
 
 ## Resolution
 
