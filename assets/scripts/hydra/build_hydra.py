@@ -42,6 +42,7 @@ HERE = 'assets/scripts/hydra'
 SHADERS = f'{HERE}/shader'   # .frag files live here
 TOX_ROOT = 'components/hydra'   # exported .tox tree, one folder per group
 HYDRA_TAG = 'hydra'             # marks generated components; survives .tox save
+DEFAULT_RES = (1280, 720)       # source components; everything else follows its input
 
 # image inputs per hydra function class; `source` is always input 0
 CLASS_INPUTS = {
@@ -235,6 +236,13 @@ def build(spec, dest):
                 p.default = p.val = float(v)
             par_exprs[inp['name']] = tuple(f'parent().par.{p.name}' for p in pars)
 
+    res_pars = None
+    if not inputs_for(spec):            # a source: nothing upstream to inherit from
+        opage = comp.appendCustomPage('Output')
+        res_pars = opage.appendInt('Resolution', label='resolution', size=2)
+        for p, v in zip(res_pars, DEFAULT_RES):
+            p.default = p.val = v
+
     if wants_time:                      # its own page -- 'Hydra' stays arguments only
         tpage = comp.appendCustomPage('Time Sync')
         t = tpage.appendFloat('Time', label='time')[0]
@@ -286,6 +294,11 @@ def build(spec, dest):
     glsl.par.pixeldat = dat
     set_menu(glsl.par.format, '16', 'float')
     set_menu(glsl.par.outputresolution, *(('input',) if in_tops else ('custom',)))
+    if res_pars is not None:
+        for gpar, cpar in (('resolutionw', res_pars[0]), ('resolutionh', res_pars[1])):
+            p = find_par(glsl, gpar)
+            if p is not None:
+                p.expr = f'parent().par.{cpar.name}'
     for i, t in enumerate(in_tops):
         glsl.inputConnectors[i].connect(t)
 
@@ -395,6 +408,20 @@ def build_audio(dest):
     comp.tags = {HYDRA_TAG, 'hydra:fft', 'hydra:audio'}
     print('hydra_fft: audio CHOP in, fft_0..fft_n + vol out')
     return comp
+
+
+def set_resolution(dest, width, height):
+    """Retune every generated source component's output resolution."""
+    n = 0
+    for child in dest.children:
+        if HYDRA_TAG not in child.tags:
+            continue
+        pars = sorted(child.pars('Resolution*'), key=lambda p: p.name)
+        if len(pars) >= 2:
+            pars[0].val, pars[1].val = width, height
+            n += 1
+    print(f'set {n} source component(s) to {width}x{height}')
+    return n
 
 
 def is_annotate(o):

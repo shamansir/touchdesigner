@@ -129,6 +129,7 @@ hydra_osc/
   time_exec           Parameter Execute DAT, time-using functions only
   out                 Out TOP     also the component's Operator Viewer
   + custom page 'Hydra'       one parameter per argument
+  + custom page 'Output'      source functions only: resolution
   + custom page 'Time Sync'   time-using functions only
 ```
 
@@ -143,6 +144,24 @@ for hydra's array arguments. CHOPs are usually the better tool.
 
 **Connector order** is image inputs first, then arguments in hydra's declared
 order, set through each In OP's *Connect Order*.
+
+## Resolution
+
+Source functions (`osc`, `noise`, `shape`, `voronoi`, `gradient`, `solid`) have
+nothing upstream to inherit a resolution from, so they get an **Output** page with
+a `resolution` parameter, defaulting to `DEFAULT_RES` — 1280×720. Every other
+class follows its input, so setting the sources sets the chain.
+
+Retune a whole container at once:
+
+```python
+b.set_resolution(op('/project1/hydra'), 1920, 1080)
+```
+
+Change `DEFAULT_RES` in `build_hydra.py` to make it the default for new builds.
+
+Anything else feeding a chain — a Constant TOP seeding a Feedback TOP, for
+instance — has to be set to match by hand, or it resamples.
 
 ## Time
 
