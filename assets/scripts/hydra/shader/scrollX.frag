@@ -8,8 +8,9 @@ uniform float speed;
 
 out vec4 fragColor;
 
+// renamed from `scrollX`: an argument shares that name
 // --- body verbatim from hydra glsl-functions.js ---
-vec2 scrollX(vec2 _st, float scrollX, float speed) {
+vec2 hydra_scrollX(vec2 _st, float scrollX, float speed) {
    _st.x += scrollX + time*speed;
    return fract(_st);
 }
@@ -17,6 +18,6 @@ vec2 scrollX(vec2 _st, float scrollX, float speed) {
 void main() {
    // a coord node samples its input at the transformed coordinate;
    // fract() stands in for hydra's wrap, which happens inside src()/prev()
-   vec2 st = scrollX(vUV.st, scrollX, speed);
+   vec2 st = hydra_scrollX(vUV.st, scrollX, speed);
    fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st)));
 }

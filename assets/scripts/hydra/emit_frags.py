@@ -140,11 +140,20 @@ def emit(spec, utils):
                     utils[u], '']
 
     # --- the hydra function ---------------------------------------------------
+    # `scrollX`, `scrollY` and `hue` each take an argument with the same name as
+    # the function; in GLSL that parameter shadows the function and the shader
+    # fails to compile. Rename the function, never the argument -- the body is
+    # verbatim hydra and refers to the argument by name.
+    fn = name
+    if any(i['name'] == name for i in inputs):
+        fn = f'hydra_{name}'
+        out.append(f'// renamed from `{name}`: an argument shares that name')
+
     sig = lead + [f"{i['type']} {i['name']}" for i in inputs
                   if not (alias and i['name'] == alias[0])]
     out += [
         '// --- body verbatim from hydra glsl-functions.js ---',
-        f"{ret} {name}({', '.join(sig)}) {{",
+        f"{ret} {fn}({', '.join(sig)}) {{",
         body.rstrip(),
         '}',
         '',
@@ -153,7 +162,7 @@ def emit(spec, utils):
     # --- main() ---------------------------------------------------------------
     call_args = [i['name'] for i in inputs if not (alias and i['name'] == alias[0])]
     args = (', ' + ', '.join(call_args)) if call_args else ''
-    out.append(MAIN[kind].format(name=name, args=args))
+    out.append(MAIN[kind].format(name=fn, args=args))
     return '\n'.join(out) + '\n'
 
 

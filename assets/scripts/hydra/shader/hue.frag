@@ -24,8 +24,9 @@ vec3 _hsvToRgb(vec3 c){
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
+// renamed from `hue`: an argument shares that name
 // --- body verbatim from hydra glsl-functions.js ---
-vec4 hue(vec4 _c0, float hue) {
+vec4 hydra_hue(vec4 _c0, float hue) {
    vec3 c = _rgbToHsv(_c0.rgb);
    c.r += hue;
    //  c.r = fract(c.r);
@@ -34,5 +35,5 @@ vec4 hue(vec4 _c0, float hue) {
 
 void main() {
    vec4 c0 = texture(sTD2DInputs[0], vUV.st);
-   fragColor = TDOutputSwizzle(hue(c0, hue));
+   fragColor = TDOutputSwizzle(hydra_hue(c0, hue));
 }
