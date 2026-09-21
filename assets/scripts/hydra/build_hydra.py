@@ -81,7 +81,12 @@ GROUPS = {
 GROUP_ORDER = ('src', 'coord', 'color', 'combine', 'combineCoord', 'audio')
 
 # components that are not generated from hydra-functions.json, by group
-EXTRA_MEMBERS = {'audio': [{'name': 'fft', 'type': 'audio'}]}
+EXTRA_MEMBERS = {'audio': [{'name': 'fft', 'type': 'audio'}],
+                 'src': [{'name': 'coords', 'type': 'src'}]}
+
+# specs for components that are not hydra functions but build like them --
+# `coords` is the identity coordinate map that seeds a coordinate-mode chain
+EXTRA_SPECS = [{'name': 'coords', 'type': 'src', 'inputs': [], 'glsl': ''}]
 
 CELL_W, CELL_H = 240, 200      # spacing between components
 COLS = 6                       # components per row within a group
@@ -178,10 +183,23 @@ def shader_text(name):
 
 def load_specs():
     path = os.path.join(project.folder, HERE, 'hydra-functions.json')
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return SLICE
+    if not os.path.exists(path):
+        return SLICE
+    with open(path) as f:
+        specs = json.load(f)
+
+    # hydra-extensions.json adds inputs hydra itself does not have (see that
+    # file). Kept separate so regenerating the upstream table cannot drop them.
+    ext_path = os.path.join(project.folder, HERE, 'hydra-extensions.json')
+    if os.path.exists(ext_path):
+        with open(ext_path) as f:
+            extensions = json.load(f)
+        by_name = {s['name']: s for s in specs}
+        for name, extra in extensions.items():
+            if name.startswith('_') or name not in by_name:
+                continue
+            by_name[name]['inputs'] = by_name[name]['inputs'] + extra.get('inputs', [])
+    return specs + EXTRA_SPECS
 
 
 TIME_DEFAULT_EXPR = 'absTime.seconds'
@@ -189,6 +207,10 @@ TIME_DEFAULT_EXPR = 'absTime.seconds'
 
 def uses_time(text):
     return 'uniform float time' in text
+
+
+def uses_coordmode(text):
+    return 'uniform float uvmode' in text
 
 
 def time_exec_source():
@@ -209,6 +231,8 @@ def _uniforms(spec, text, par_exprs):
         out.append(('time', ('parent().par.Time',)))
     if 'uniform vec2 resolution' in text:
         out.append(('resolution', ('me.width', 'me.height')))
+    if uses_coordmode(text):
+        out.append(('uvmode', ('parent().par.Coordmode',)))
     for inp in spec['inputs']:
         n = inp['name']
         if inp['type'] == 'float':
@@ -266,11 +290,20 @@ def build(spec, dest):
     dat.par.loadonstart = True
     dat.nodeX, dat.nodeY = -200, -300
 
+    image_inputs = inputs_for(spec)     # the coords input below is NOT one of these
     in_tops = []
-    for i, label in enumerate(inputs_for(spec)):
+    for i, label in enumerate(image_inputs):
         t = comp.create(inTOP, label)
         t.nodeX, t.nodeY = -600, -160 * i
         set_order(t, i)                    # image inputs come first
+        in_tops.append(t)
+
+    # a source in coordinate mode reads its `st` from a coordinate map, which
+    # arrives on an extra input after the image ones (shader's COORD_IN)
+    if kind == 'src' and uses_coordmode(text):
+        t = comp.create(inTOP, 'coords')
+        t.nodeX, t.nodeY = -600, -160 * len(in_tops)
+        set_order(t, len(in_tops))
         in_tops.append(t)
 
     # one CHOP input per numeric argument, each defaulting to its parameter
@@ -302,14 +335,15 @@ def build(spec, dest):
     glsl.nodeX, glsl.nodeY = 0, 0
     glsl.par.pixeldat = dat
     set_menu(glsl.par.format, '16', 'float')
-    set_menu(glsl.par.outputresolution, *(('input',) if in_tops else ('custom',)))
+    set_menu(glsl.par.outputresolution,
+             *(('input',) if image_inputs else ('custom',)))
     for i, t in enumerate(in_tops):
         glsl.inputConnectors[i].connect(t)
 
     # --- Output page: mirrors of the GLSL TOP's Common parameters -------------
     opage = comp.appendCustomPage('Output')
 
-    if not in_tops:                 # a source: nothing upstream to inherit from
+    if not image_inputs:            # a source: nothing upstream to inherit from
         res_pars = opage.appendInt('Resolution', label='resolution', size=2)
         for p, v in zip(res_pars, DEFAULT_RES):
             p.default = p.val = v
@@ -323,6 +357,10 @@ def build(spec, dest):
             mirror_menu(opage, smooth, 'Inputsmoothness', 'input smoothness')
 
     mirror_menu(opage, glsl.par.format, 'Pixelformat', 'pixel format')
+
+    if uses_coordmode(text):
+        cm = opage.appendToggle('Coordmode', label='coordinate mode')[0]
+        cm.default = cm.val = False
 
     if wants_time:
         # embedded, not file-synced, so an exported .tox carries its own callback

@@ -3,9 +3,12 @@
 // inputs: scale (5.0), speed (0.3), blending (0.3)
 
 uniform float time;          // -> absTime.seconds
+uniform float uvmode;        // -> parent().par.Coordmode
 uniform float scale;
 uniform float speed;
 uniform float blending;
+
+#define COORD_IN 0
 
 out vec4 fragColor;
 
@@ -40,5 +43,7 @@ vec4 voronoi(vec2 _st, float scale, float speed, float blending) {
 }
 
 void main() {
-   fragColor = TDOutputSwizzle(voronoi(vUV.st, scale, speed, blending));
+   vec2 st = vUV.st;
+   if (uvmode > 0.5) st = texture(sTD2DInputs[COORD_IN], vUV.st).rg;
+   fragColor = TDOutputSwizzle(voronoi(st, scale, speed, blending));
 }

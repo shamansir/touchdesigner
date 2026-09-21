@@ -10,6 +10,7 @@ Research and design rationale: `claude/HYDRA_RESEARCH.md`.
 | file | what it is |
 |---|---|
 | `hydra-functions.json` | the 52 function specs, extracted from hydra's `glsl-functions.js` |
+| `hydra-extensions.json` | deliberate additions to that table — merged over it at load |
 | `generate-hydra-functions.sh` | regenerates that JSON from hydra's source |
 | `emit_frags.py` | writes `shader/*.frag` from the JSON |
 | `build_hydra.py` | builds the TD components from the JSON + shaders |
@@ -263,6 +264,63 @@ re-enter `absTime.seconds` or rebuild the component.
 
 **Input 1 of a `combineCoord` is the modulator** — `a.modulate(b)` puts `b`
 there. The In TOPs are named `source` and `modulator` for this reason.
+
+## Coordinate mode
+
+Hydra does not rotate a picture of `osc` — it rotates the *coordinate* and then
+evaluates `osc` there, analytically, over an unbounded domain. A node graph
+rasterizes each stage, so `hydra_rotate` sampling `hydra_osc` runs off the edge of
+a finite texture and wraps, leaving a seam. `osc(9,-0.3,900).rotate(6)` shows it
+plainly: continuous diagonal stripes in hydra, a hard diagonal break here.
+
+**Coordinate mode** restores hydra's model. `coord` components transform a
+*coordinate map* (RG = `st`) instead of sampling an image, and `src` components
+read their `st` from one — so the source is evaluated at the final coordinates,
+however far outside 0..1 they land.
+
+```
+hydra_coords ──→ hydra_rotate ──→ hydra_osc ──→ …
+(identity st)     Coordmode on     Coordmode on
+```
+
+- **`hydra_coords`** is the identity map that seeds the chain, in the Source group.
+- **`coordinate mode`** (Output page) switches a component between image and
+  coordinate handling. Off by default: existing patches are untouched.
+- Sources gain a **`coords`** input, after their image inputs.
+- **Use 32-bit float** on every TOP in the coordinate path. Coordinates leave
+  0..1 immediately and anything fixed-point clips them.
+
+**Coord nodes wire in reverse of the hydra chain.** Hydra emits
+`st = c_last(st); … st = c_first(st); src(st)`, so the last coord op in the sketch
+runs first. `osc().rotate().scale()` becomes
+`coords → scale → rotate → osc`. Faithful to evaluation order, backwards from how
+it reads.
+
+Not covered: `combineCoord` (the `modulate*` family) stays image-only for now —
+its modulator is an image sampled mid-chain, which needs its own design pass.
+
+## Extensions
+
+`hydra-extensions.json` adds inputs hydra itself does not have. Both `emit_frags.py`
+and `build_hydra.py` merge it over `hydra-functions.json` at load, so regenerating
+the upstream table never discards it.
+
+Today it gives **`layer`, `diff` and `mask` an `amount`**, which hydra provides for
+`add`, `sub`, `mult` and `blend` but not for those three. It follows hydra's own
+convention — `mix(_c0, result, amount)`, i.e. fade the result back toward the
+source — and **defaults to 1, which is exactly hydra's behaviour**. Only a value
+below 1 diverges from upstream.
+
+An input marked `"extension"` is not passed to the hydra function; the emitter
+applies it at the call site, so the function body stays verbatim:
+
+```glsl
+vec4 result = diff(c0, c1);
+fragColor = TDOutputSwizzle(mix(c0, result, amount));
+```
+
+The builder needs no special case — it sees a normal `float` input and makes the
+parameter, the Constant default and the CHOP connector like any other.
 
 ## Groups
 

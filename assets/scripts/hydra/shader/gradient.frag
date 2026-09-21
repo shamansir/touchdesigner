@@ -3,7 +3,10 @@
 // inputs: speed (0.0)
 
 uniform float time;          // -> absTime.seconds
+uniform float uvmode;        // -> parent().par.Coordmode
 uniform float speed;
+
+#define COORD_IN 0
 
 out vec4 fragColor;
 
@@ -13,5 +16,7 @@ vec4 gradient(vec2 _st, float speed) {
 }
 
 void main() {
-   fragColor = TDOutputSwizzle(gradient(vUV.st, speed));
+   vec2 st = vUV.st;
+   if (uvmode > 0.5) st = texture(sTD2DInputs[COORD_IN], vUV.st).rg;
+   fragColor = TDOutputSwizzle(gradient(st, speed));
 }

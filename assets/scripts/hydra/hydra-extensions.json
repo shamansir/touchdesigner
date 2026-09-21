@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Additions to hydra's own function table, merged over hydra-functions.json by",
+    "both emit_frags.py and build_hydra.py. Kept separate so regenerating the",
+    "upstream JSON never discards them.",
+    "",
+    "An input marked with \"extension\" is NOT passed to the hydra function -- its",
+    "body stays verbatim. The emitter applies it at the call site instead.",
+    "",
+    "blend_amount: hydra gives add/sub/mult/blend an `amount` that fades the result",
+    "back toward the source -- (result)*amount + _c0*(1-amount). layer, diff and",
+    "mask were left without one. This adds it, defaulting to 1, which is exactly",
+    "hydra's behaviour; only a value below 1 diverges."
+  ],
+
+  "layer": {
+    "inputs": [
+      { "type": "float", "name": "amount", "default": 1, "extension": "blend_amount" }
+    ]
+  },
+  "diff": {
+    "inputs": [
+      { "type": "float", "name": "amount", "default": 1, "extension": "blend_amount" }
+    ]
+  },
+  "mask": {
+    "inputs": [
+      { "type": "float", "name": "amount", "default": 1, "extension": "blend_amount" }
+    ]
+  }
+}

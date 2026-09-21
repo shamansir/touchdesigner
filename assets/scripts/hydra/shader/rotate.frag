@@ -3,6 +3,7 @@
 // inputs: angle (10.0), speed (0.0)
 
 uniform float time;          // -> absTime.seconds
+uniform float uvmode;        // -> parent().par.Coordmode
 uniform float angle;
 uniform float speed;
 
@@ -18,8 +19,13 @@ vec2 rotate(vec2 _st, float angle, float speed) {
 }
 
 void main() {
-   // a coord node samples its input at the transformed coordinate;
-   // fract() stands in for hydra's wrap, which happens inside src()/prev()
-   vec2 st = rotate(vUV.st, angle, speed);
-   fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st)));
+   if (uvmode > 0.5) {
+      // transform the incoming coordinate map; a source evaluates it downstream
+      vec2 inSt = texture(sTD2DInputs[0], vUV.st).rg;
+      fragColor = TDOutputSwizzle(vec4(rotate(inSt, angle, speed), 0.0, 1.0));
+   } else {
+      // image mode: sample the input at the transformed coordinate
+      vec2 st = rotate(vUV.st, angle, speed);
+      fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st)));
+   }
 }

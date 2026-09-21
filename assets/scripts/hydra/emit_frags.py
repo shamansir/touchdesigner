@@ -31,15 +31,26 @@ SIGNATURE = {
     'combineCoord': ('vec2', ['vec2 _st', 'vec4 _c0']),
 }
 
+# Coordinate mode (uvmode > 0.5) restores hydra's actual evaluation model: coord
+# ops transform a coordinate map, and the source is evaluated analytically at the
+# final coordinates -- so an unbounded source like osc stays continuous outside
+# [0,1] instead of wrapping a finished texture. RG carries st; use 32-bit float.
 MAIN = {
     'src': """void main() {{
-   fragColor = TDOutputSwizzle({name}(vUV.st{args}));
+   vec2 st = vUV.st;
+   if (uvmode > 0.5) st = texture(sTD2DInputs[COORD_IN], vUV.st).rg;
+   fragColor = TDOutputSwizzle({name}(st{args}));
 }}""",
     'coord': """void main() {{
-   // a coord node samples its input at the transformed coordinate;
-   // fract() stands in for hydra's wrap, which happens inside src()/prev()
-   vec2 st = {name}(vUV.st{args});
-   fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st)));
+   if (uvmode > 0.5) {{
+      // transform the incoming coordinate map; a source evaluates it downstream
+      vec2 inSt = texture(sTD2DInputs[0], vUV.st).rg;
+      fragColor = TDOutputSwizzle(vec4({name}(inSt{args}), 0.0, 1.0));
+   }} else {{
+      // image mode: sample the input at the transformed coordinate
+      vec2 st = {name}(vUV.st{args});
+      fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st)));
+   }}
 }}""",
     'color': """void main() {{
    vec4 c0 = texture(sTD2DInputs[0], vUV.st);
@@ -65,6 +76,26 @@ TEXTURE_ALIAS = {
 }
 
 UTILS = ('_luminance', '_noise', '_rgbToHsv', '_hsvToRgb')
+
+# combine, with an `amount` that fades the result back toward the source --
+# hydra's own convention for add/sub/mult/blend, applied at the call site so the
+# function body stays verbatim
+MAIN_COMBINE_AMOUNT = """void main() {{
+   vec4 c0 = texture(sTD2DInputs[0], vUV.st);   // source
+   vec4 c1 = texture(sTD2DInputs[1], vUV.st);   // with
+   vec4 result = {name}(c0, c1{args});
+   fragColor = TDOutputSwizzle(mix(c0, result, amount));
+}}"""
+
+
+def merge_extensions(specs, extensions):
+    """Append hydra-extensions.json inputs onto the matching function specs."""
+    by_name = {s['name']: s for s in specs}
+    for name, extra in extensions.items():
+        if name.startswith('_') or name not in by_name:
+            continue
+        by_name[name]['inputs'] = by_name[name]['inputs'] + extra.get('inputs', [])
+    return specs
 
 
 SHADER_DIR = 'shader'      # .frag files and _utils.glsl live here
@@ -116,6 +147,8 @@ def emit(spec, utils):
     if re.search(r'\bresolution\b', body):
         uniforms.append('uniform vec2 resolution;     // -> me.width, me.height')
     alias = TEXTURE_ALIAS.get(name)
+    if kind in ('src', 'coord'):
+        uniforms.append('uniform float uvmode;        // -> parent().par.Coordmode')
     for i in inputs:
         if alias and i['name'] == alias[0]:
             continue                                   # becomes a TOP input
@@ -126,6 +159,9 @@ def emit(spec, utils):
     if uniforms:
         out += uniforms + ['']
 
+    if kind == 'src':
+        # image inputs come first on the component; coordinates are the last one
+        out += [f'#define COORD_IN {1 if alias else 0}', '']
     if alias:
         out += [f'#define {alias[0]} {alias[1]}', '']
     if 'texture2D' in body:
@@ -149,8 +185,9 @@ def emit(spec, utils):
         fn = f'hydra_{name}'
         out.append(f'// renamed from `{name}`: an argument shares that name')
 
-    sig = lead + [f"{i['type']} {i['name']}" for i in inputs
-                  if not (alias and i['name'] == alias[0])]
+    passed = [i for i in inputs
+              if not (alias and i['name'] == alias[0]) and not i.get('extension')]
+    sig = lead + [f"{i['type']} {i['name']}" for i in passed]
     out += [
         '// --- body verbatim from hydra glsl-functions.js ---',
         f"{ret} {fn}({', '.join(sig)}) {{",
@@ -160,9 +197,12 @@ def emit(spec, utils):
     ]
 
     # --- main() ---------------------------------------------------------------
-    call_args = [i['name'] for i in inputs if not (alias and i['name'] == alias[0])]
+    call_args = [i['name'] for i in passed]
     args = (', ' + ', '.join(call_args)) if call_args else ''
-    out.append(MAIN[kind].format(name=fn, args=args))
+
+    has_amount = any(i.get('extension') == 'blend_amount' for i in inputs)
+    template = MAIN_COMBINE_AMOUNT if (has_amount and kind == 'combine') else MAIN[kind]
+    out.append(template.format(name=fn, args=args))
     return '\n'.join(out) + '\n'
 
 
@@ -175,6 +215,10 @@ def emit_all(out_dir=None, json_path=None, utils_path=None, overwrite=True):
 
     with open(json_path) as f:
         specs = json.load(f)
+    ext_path = os.path.join(here, 'hydra-extensions.json')
+    if os.path.exists(ext_path):
+        with open(ext_path) as f:
+            specs = merge_extensions(specs, json.load(f))
     utils = load_utils(utils_path)
 
     written, skipped = 0, []

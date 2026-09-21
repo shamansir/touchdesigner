@@ -3,9 +3,12 @@
 // inputs: frequency (60.0), sync (0.1), offset (0.0)
 
 uniform float time;          // -> absTime.seconds
+uniform float uvmode;        // -> parent().par.Coordmode
 uniform float frequency;
 uniform float sync;
 uniform float offset;
+
+#define COORD_IN 0
 
 out vec4 fragColor;
 
@@ -19,5 +22,7 @@ vec4 osc(vec2 _st, float frequency, float sync, float offset) {
 }
 
 void main() {
-   fragColor = TDOutputSwizzle(osc(vUV.st, frequency, sync, offset));
+   vec2 st = vUV.st;
+   if (uvmode > 0.5) st = texture(sTD2DInputs[COORD_IN], vUV.st).rg;
+   fragColor = TDOutputSwizzle(osc(st, frequency, sync, offset));
 }

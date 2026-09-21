@@ -3,8 +3,11 @@
 // inputs: scale (10.0), offset (0.1)
 
 uniform float time;          // -> absTime.seconds
+uniform float uvmode;        // -> parent().par.Coordmode
 uniform float scale;
 uniform float offset;
+
+#define COORD_IN 0
 
 out vec4 fragColor;
 
@@ -89,5 +92,7 @@ vec4 noise(vec2 _st, float scale, float offset) {
 }
 
 void main() {
-   fragColor = TDOutputSwizzle(noise(vUV.st, scale, offset));
+   vec2 st = vUV.st;
+   if (uvmode > 0.5) st = texture(sTD2DInputs[COORD_IN], vUV.st).rg;
+   fragColor = TDOutputSwizzle(noise(st, scale, offset));
 }

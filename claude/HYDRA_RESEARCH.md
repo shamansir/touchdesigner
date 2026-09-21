@@ -71,14 +71,34 @@ By induction the whole chain agrees. The same argument covers `combineCoord`/`mo
 modulator texture is sampled at the current `st`, and downstream coord ops re-address it the
 same way hydra's nesting does.
 
-**What actually differs:**
+> **Correction (2026-09-22).** That induction holds only while `g(p)` stays inside the unit
+> square. Hydra's sources are *unbounded analytic functions* — `osc` is defined for every real
+> `st.x` — while a TD source is a texture covering `st ∈ [0,1]²` and nothing else. Any coord op
+> that pulls coordinates outside that square has no stored value to read, so it wraps (or
+> clamps, or mirrors) where hydra simply evaluates the function further out.
+>
+> `osc(9,-0.3,900).rotate(6)` is the clean demonstration: infinite continuous diagonal stripes
+> in hydra, a hard seam in the node graph wherever the wrap lands. It only cancels out when the
+> source happens to tile over the unit square — `osc` with `frequency = 2πk`, for instance.
+>
+> This is the one structural limit of the port, not a tuning issue. The fix is to make
+> coordinates first-class: give `src` components an optional coordinate input (a 32-bit float
+> TOP carrying `st` in RG) and `coord` components a mode that transforms that map instead of
+> sampling an image, so the source is evaluated analytically at the final coordinates the way
+> hydra does. Note that in such a pipeline coord nodes wire in *reverse* of the JS chain order,
+> since hydra applies the last coord op in the chain first.
+
+**What else differs:**
 
 | | hydra | per-TOP port |
 |---|---|---|
+| Source domain | unbounded analytic function | texture over `[0,1]²`, wrapped outside (see correction) |
 | Sampling | once, analytic, at full float precision | once per node, bilinear, at texture resolution |
 | Wrapping | one `fract()` inside `src`/`prev` | one `fract()` per coord node (see §6) |
 | Passes | 1 | 1 per node |
 | Precision | float32 throughout | whatever the TOP pixel format is |
+| Buffer reads (`o0`–`o3`) | 1 frame if that output ticks earlier, 2 if later | 1 frame per Feedback TOP |
+| Buffer filtering | `mag: 'nearest'`, 8-bit RGBA (`output.js`) | whatever the TOP is set to |
 
 Chains of several coord ops will read slightly softer than hydra, and heavy
 `kaleid → repeat → modulate` stacks will show resampling artifacts hydra doesn't have. That is
