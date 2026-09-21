@@ -143,6 +143,21 @@ def set_color_par(o, prefix, rgb):
     return True
 
 
+def mirror_menu(page, source_par, name, label):
+    """A custom menu par cloning an operator's menu, bound back to it.
+
+    TD does not expose a COMP's internal TOP Common parameters, so anything a
+    user needs to reach has to be mirrored onto the component like this.
+    """
+    p = page.appendMenu(name, label=label)[0]
+    p.menuNames = list(source_par.menuNames)
+    p.menuLabels = list(source_par.menuLabels)
+    current = source_par.menuNames[source_par.menuIndex]
+    p.default = p.val = current
+    source_par.expr = f'parent().par.{p.name}'
+    return p
+
+
 def set_order(o, index):
     """Connect Order on an In OP -- decides the component's connector order."""
     p = find_par(o, 'connectorder', 'connectionorder', 'order')
@@ -237,13 +252,6 @@ def build(spec, dest):
                 p.default = p.val = float(v)
             par_exprs[inp['name']] = tuple(f'parent().par.{p.name}' for p in pars)
 
-    res_pars = None
-    if not inputs_for(spec):            # a source: nothing upstream to inherit from
-        opage = comp.appendCustomPage('Output')
-        res_pars = opage.appendInt('Resolution', label='resolution', size=2)
-        for p, v in zip(res_pars, DEFAULT_RES):
-            p.default = p.val = v
-
     if wants_time:                      # its own page -- 'Hydra' stays arguments only
         tpage = comp.appendCustomPage('Time Sync')
         t = tpage.appendFloat('Time', label='time')[0]
@@ -295,13 +303,26 @@ def build(spec, dest):
     glsl.par.pixeldat = dat
     set_menu(glsl.par.format, '16', 'float')
     set_menu(glsl.par.outputresolution, *(('input',) if in_tops else ('custom',)))
-    if res_pars is not None:
+    for i, t in enumerate(in_tops):
+        glsl.inputConnectors[i].connect(t)
+
+    # --- Output page: mirrors of the GLSL TOP's Common parameters -------------
+    opage = comp.appendCustomPage('Output')
+
+    if not in_tops:                 # a source: nothing upstream to inherit from
+        res_pars = opage.appendInt('Resolution', label='resolution', size=2)
+        for p, v in zip(res_pars, DEFAULT_RES):
+            p.default = p.val = v
         for gpar, cpar in (('resolutionw', res_pars[0]), ('resolutionh', res_pars[1])):
             p = find_par(glsl, gpar)
             if p is not None:
                 p.expr = f'parent().par.{cpar.name}'
-    for i, t in enumerate(in_tops):
-        glsl.inputConnectors[i].connect(t)
+    else:                           # only samplers care how their input is read
+        smooth = find_par(glsl, 'inputfiltertype', 'inputsmoothness', 'filtertype')
+        if smooth is not None:
+            mirror_menu(opage, smooth, 'Inputsmoothness', 'input smoothness')
+
+    mirror_menu(opage, glsl.par.format, 'Pixelformat', 'pixel format')
 
     if wants_time:
         # embedded, not file-synced, so an exported .tox carries its own callback
@@ -485,6 +506,31 @@ def set_resolution(dest, width, height):
         print(f'  !! over {NONCOMMERCIAL_MAX}px -- a non-commercial licence will '
               f'clamp this')
     return n
+
+
+def set_output(dest, smoothness=None, pixel_format=None):
+    """Set Input Smoothness / Pixel Format across a container, by substring.
+
+        set_output(dest, smoothness='nearest')
+        set_output(dest, pixel_format='8-bit')
+
+    Matching is on the menu entry text, so partial names are fine; anything that
+    does not match prints its available options.
+    """
+    smoothed = formatted = 0
+    for child in dest.children:
+        if HYDRA_TAG not in child.tags:
+            continue
+        if smoothness and 'Inputsmoothness' in {p.name for p in child.pars()}:
+            set_menu(child.par.Inputsmoothness, smoothness.lower())
+            smoothed += 1
+        if pixel_format and 'Pixelformat' in {p.name for p in child.pars()}:
+            set_menu(child.par.Pixelformat, *pixel_format.lower().split())
+            formatted += 1
+    if smoothness:
+        print(f'set input smoothness on {smoothed} component(s)')
+    if pixel_format:
+        print(f'set pixel format on {formatted} component(s)')
 
 
 def is_annotate(o):

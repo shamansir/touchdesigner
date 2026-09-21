@@ -130,7 +130,7 @@ hydra_osc/
   time_exec           Parameter Execute DAT, time-using functions only
   out                 Out TOP     also the component's Operator Viewer
   + custom page 'Hydra'       one parameter per argument
-  + custom page 'Output'      source functions only: resolution
+  + custom page 'Output'      resolution (sources), input smoothness, pixel format
   + custom page 'Time Sync'   time-using functions only
 ```
 
@@ -198,6 +198,41 @@ in `build_hydra.py` to move the default for new builds.
 
 Anything else feeding a chain — a Constant TOP seeding a Feedback TOP, for
 instance — has to be set to match by hand, or it resamples.
+
+## Input Smoothness and Pixel Format
+
+TD does not expose a COMP's internal TOP Common parameters, so the **Output** page
+mirrors the two that matter, bound to the inner GLSL TOP:
+
+| parameter | on | mirrors |
+|---|---|---|
+| `resolution` | sources only | `resolutionw` / `resolutionh` |
+| `input smoothness` | everything with an image input | `inputfiltertype` |
+| `pixel format` | everything | `format` |
+
+Menus are cloned from the GLSL TOP, so the entries are TD's own. Sources have no
+image input, so they get no smoothness control — how a source is read is decided
+by whoever samples it, i.e. the next component down.
+
+Set them across a container:
+
+```python
+b.set_output(op('/project1/hydra'), smoothness='nearest')
+b.set_output(op('/project1/hydra'), pixel_format='8-bit')
+```
+
+Matching is by substring against the menu text, and a miss prints the available
+options.
+
+**When this matters: feedback loops.** Hydra's output buffers are created with
+`mag: 'nearest'` and 8-bit RGBA (`output.js`). At TD's default interpolation, a
+sub-pixel scroll inside a feedback loop blends neighbouring texels every frame —
+a running blur that diffuses detail across the whole frame, where hydra's nearest
+sampling copies it back untouched and keeps it crisp. 16-bit float compounds this
+by keeping residues alive that 8-bit would quantize to zero.
+
+The tension: 16-bit float is right when `noise()` feeds `modulate()` (negative
+values survive), and wrong for hydra-exact feedback. Pick per patch.
 
 ## Time
 
