@@ -236,12 +236,32 @@ def _uniforms(spec, text, par_exprs):
     for inp in spec['inputs']:
         n = inp['name']
         if inp['type'] == 'float':
-            # the In CHOP always has a channel: connected, or the Constant default
-            out.append((n, (f"op('{n}')[0].eval()",)))
+            # Normally the In CHOP always has a channel -- connected externally,
+            # or the Constant default on its internal input. The guard keeps the
+            # parameter working even when that plumbing is missing or empty,
+            # rather than leaving the uniform unassigned.
+            out.append((n, (f"op('{n}')[0].eval() "
+                            f"if op('{n}') and op('{n}').numChans "
+                            f"else parent().par.{par_name(n)}",)))
         elif n in par_exprs:              # vec2/3/4 -- straight from its parameters
             out.append((n, par_exprs[n]))
         # sampler2D inputs became TOP inputs via #define in the shader
     return out
+
+
+def apply_uniforms(glsl, spec, text, par_exprs):
+    """Rewrite the GLSL TOP's Vectors page to match the shader's uniforms."""
+    uniforms = _uniforms(spec, text, par_exprs)
+    glsl.seq.vec.numBlocks = max(len(uniforms), 1)
+    for i, (uname, exprs) in enumerate(uniforms):
+        glsl.par[f'vec{i}name'] = uname
+        for c in 'xyzw':
+            p = glsl.par[f'vec{i}value{c}']
+            p.mode = ParMode.CONSTANT
+            p.val = 0
+        for c, expr in zip('xyzw', exprs):
+            glsl.par[f'vec{i}value{c}'].expr = expr
+    return uniforms
 
 
 def build(spec, dest):
@@ -298,12 +318,14 @@ def build(spec, dest):
         set_order(t, i)                    # image inputs come first
         in_tops.append(t)
 
-    # a source in coordinate mode reads its `st` from a coordinate map, which
-    # arrives on an extra input after the image ones (shader's COORD_IN)
+    # A source in coordinate mode reads its `st` from a coordinate map. The
+    # shader takes it at COORD_IN (straight after the image inputs), but on the
+    # component it is ordered LAST, after every argument connector -- otherwise
+    # it lands in the middle of the hydra arguments.
     if kind == 'src' and uses_coordmode(text):
         t = comp.create(inTOP, 'coords')
         t.nodeX, t.nodeY = -600, -160 * len(in_tops)
-        set_order(t, len(in_tops))
+        set_order(t, len(image_inputs) + len(floats))
         in_tops.append(t)
 
     # one CHOP input per numeric argument, each defaulting to its parameter
@@ -322,7 +344,7 @@ def build(spec, dest):
 
         chop = comp.create(inCHOP, hn)
         chop.nodeX, chop.nodeY = -600, y
-        set_order(chop, len(in_tops) + i)   # then the arguments, in hydra's order
+        set_order(chop, len(image_inputs) + i)   # arguments, in hydra's order
         # The In CHOP's own input is the fallback, used when the component's
         # external connector is empty. Builds differ on how many connectors it
         # exposes, so take the last one rather than assuming an index.
@@ -390,19 +412,10 @@ def build(spec, dest):
         viewer.val = './out'
 
     comp.color = GROUPS[kind][1]
-    comp.tags = {HYDRA_TAG, f'hydra:{name}', f'hydra:{kind}'}
+    comp.tags = {HYDRA_TAG, f'hydra:fn:{name}', f'hydra:class:{kind}'}
 
     # --- uniforms -------------------------------------------------------------
-    uniforms = _uniforms(spec, text, par_exprs)
-    glsl.seq.vec.numBlocks = max(len(uniforms), 1)
-    for i, (uname, exprs) in enumerate(uniforms):
-        glsl.par[f'vec{i}name'] = uname
-        for c in 'xyzw':
-            p = glsl.par[f'vec{i}value{c}']
-            p.mode = ParMode.CONSTANT
-            p.val = 0
-        for c, expr in zip('xyzw', exprs):
-            glsl.par[f'vec{i}value{c}'].expr = expr
+    uniforms = apply_uniforms(glsl, spec, text, par_exprs)
 
     print(f'{comp_name}: {kind}, {len(in_tops)} TOP in, '
           f'{len(floats)} CHOP in, {len(uniforms)} uniforms')
@@ -465,7 +478,7 @@ def build_audio(dest):
     if viewer is not None:
         viewer.val = './out'
     comp.color = AUDIO_COLOR
-    comp.tags = {HYDRA_TAG, 'hydra:fft', 'hydra:audio'}
+    comp.tags = {HYDRA_TAG, 'hydra:fn:fft', 'hydra:class:audio'}
     print('hydra_fft: audio CHOP in, fft_0..fft_n + vol out')
     return comp
 
@@ -529,6 +542,182 @@ def spawn(names, dest=None, lib=None, postfix='', spacing=200, x=0, y=0):
     return made
 
 
+def spec_name(comp, by_name):
+    """Which hydra function a placed component is, despite renaming.
+
+    The node name comes first: it is what the user sees, and copies only mangle
+    it in two predictable ways -- TD appends digits on collision (hydra_osc3),
+    users append their own suffixes (hydra_scrollx_rangga3x).
+
+    Tags are the fallback. Note `hydra:fn:` vs the older bare `hydra:` form: the
+    old scheme wrote the class as a tag too, and `hydra:src` is indistinguishable
+    from the *function* named `src`, so an osc could be read as a src and get the
+    wrong shader's uniforms. Legacy bare tags are therefore only trusted when
+    they do not name a class.
+    """
+    base = comp.name[len('hydra_'):] if comp.name.startswith('hydra_') else comp.name
+    for candidate in (base,
+                      base.rstrip('0123456789'),
+                      base.split('_')[0],
+                      base.split('_')[0].rstrip('0123456789')):
+        if candidate.lower() in by_name:
+            return candidate.lower()
+
+    for t in comp.tags:                       # current scheme
+        if t.startswith('hydra:fn:'):
+            candidate = t.split(':', 2)[2].lower()
+            if candidate in by_name:
+                return candidate
+
+    classes = {k.lower() for k in CLASS_INPUTS}
+    for t in comp.tags:                       # legacy, class tags excluded
+        if t.startswith('hydra:') and not t.startswith('hydra:class:'):
+            candidate = t.split(':', 1)[1].lower()
+            if candidate in by_name and candidate not in classes:
+                return candidate
+    return None
+
+
+def upgrade(dest, specs=None, depth=8):
+    """Repair already-placed components in `dest` against the current shaders.
+
+    Shaders are file-synced and shared, so regenerating them changes every copy
+    in every patch -- but a copy keeps its own uniform entries, inputs and
+    parameters, which then no longer match. This re-applies those in place,
+    without rebuilding or rewiring anything.
+
+    Searches recursively, so point it at a project or a patch container, not
+    just the library.
+    """
+    specs = specs or load_specs()
+    by_name = {s['name'].lower(): s for s in specs}
+
+    # Copies made before tagging existed carry no `hydra` tag, so searching by
+    # tag alone silently skips exactly the components most in need of repair.
+    # Match on the tag OR on the name plus an inner `glsl` TOP.
+    try:
+        candidates = dest.findChildren(type=COMP, maxDepth=depth)
+    except Exception:
+        candidates = [c for c in dest.children if c.isCOMP]
+
+    found = [c for c in candidates
+             if HYDRA_TAG in c.tags or (c.name.startswith('hydra_') and c.op('glsl'))]
+
+    fixed, skipped, failed = [], [], []
+    for comp in found:
+        if not comp.isCOMP:
+            continue
+        name = spec_name(comp, by_name)
+        spec = by_name.get(name) if name else None
+        glsl = comp.op('glsl')
+        if comp.name.startswith('hydra_fft'):
+            continue                            # built by build_audio, has no spec
+        if spec is None or glsl is None:
+            skipped.append(comp.name)
+            continue
+
+        text = shader_text(spec['name'])
+        kind = spec['type']
+        image_inputs = inputs_for(spec)
+
+        floats = [i for i in spec['inputs'] if i['type'] == 'float']
+
+        # Re-apply Connect Order to the image inputs. Components built before
+        # Connect Order existed left them all at the default, so `source` could
+        # tie with the arguments and land anywhere among them.
+        for i, label in enumerate(image_inputs):
+            t = comp.op(label)
+            if t:
+                set_order(t, i)
+            else:
+                print(f'  !! {comp.path}: no In TOP named {label!r}')
+
+        # a source in coordinate mode needs the extra `coords` input, ordered
+        # after every argument connector (see build)
+        if kind == 'src' and uses_coordmode(text):
+            t = comp.op('coords')
+            if not t:
+                t = comp.create(inTOP, 'coords')
+                t.nodeX, t.nodeY = -600, -160 * len(image_inputs)
+                glsl.inputConnectors[len(image_inputs)].connect(t)
+            set_order(t, len(image_inputs) + len(floats))
+
+        # and the toggle that drives the uvmode uniform
+        if uses_coordmode(text) and 'Coordmode' not in {p.name for p in comp.pars()}:
+            page = next((pg for pg in comp.customPages if pg.name == 'Output'),
+                        None) or comp.appendCustomPage('Output')
+            cm = page.appendToggle('Coordmode', label='coordinate mode')[0]
+            cm.default = cm.val = False
+
+        # Argument plumbing, for copies predating the per-argument CHOP inputs:
+        # the uniform expression is op('<arg>')[0].eval(), so a missing In CHOP
+        # evaluates to None and the uniform never gets assigned.
+        names = {p.name for p in comp.pars()}
+        hydra_page = next((pg for pg in comp.customPages if pg.name == 'Hydra'), None)
+        for k, inp in enumerate(floats):
+            hn, pn = inp['name'], par_name(inp['name'])
+            y = 200 + 160 * k
+
+            if pn not in names:
+                hydra_page = hydra_page or comp.appendCustomPage('Hydra')
+                pp = hydra_page.appendFloat(pn, label=hn)[0]
+                d = float(inp['default'] or 0)
+                pp.default = pp.val = d
+                pp.normMin, pp.normMax = min(0.0, 2 * d), max(1.0, 2 * d)
+
+            const = comp.op(f'{hn}_default')
+            if not const:
+                const = comp.create(constantCHOP, f'{hn}_default')
+                const.nodeX, const.nodeY = -800, y
+                cname = find_par(const, 'name0', 'const0name')
+                cvalue = find_par(const, 'value0', 'const0value')
+                if cname is not None:
+                    cname.val = hn
+                if cvalue is not None:
+                    cvalue.expr = f'parent().par.{pn}'
+
+            chop = comp.op(hn)
+            if not chop:
+                chop = comp.create(inCHOP, hn)
+                chop.nodeX, chop.nodeY = -600, y
+            set_order(chop, len(image_inputs) + k)   # re-apply: fixes old ties
+            # wire the fallback whether the In CHOP is new or was already there:
+            # an existing one with an empty internal input is exactly the case
+            # that leaves the parameter with no path to the shader
+            if chop.inputConnectors:
+                last = chop.inputConnectors[len(chop.inputConnectors) - 1]
+                if not last.connections:
+                    last.connect(const)
+
+        # vec inputs (only `sum` today) read straight from their parameters
+        par_exprs = {}
+        for inp in spec['inputs']:
+            if inp['type'].startswith('vec'):
+                pars = sorted(comp.pars(par_name(inp['name']) + '*'),
+                              key=lambda p: p.name)
+                if pars:
+                    par_exprs[inp['name']] = tuple(f'parent().par.{p.name}'
+                                                   for p in pars)
+
+        try:
+            apply_uniforms(glsl, spec, text, par_exprs)
+        except Exception as e:                  # never let one bad comp stop the sweep
+            failed.append(f'{comp.name} ({e})')
+            continue
+        # retag: drop the ambiguous legacy hydra: tags, keep any of the user's own
+        keep = {t for t in comp.tags if not t.startswith('hydra:') and t != HYDRA_TAG}
+        comp.tags = keep | {HYDRA_TAG, f"hydra:fn:{spec['name']}",
+                            f"hydra:class:{spec['type']}"}
+        fixed.append(comp.name)
+
+    print(f'upgraded {len(fixed)} of {len(found)} component(s) under {dest.path}')
+    if skipped:
+        print('  !! could not identify:', ', '.join(skipped))
+    if failed:
+        print('  !! errored:', '; '.join(failed))
+    return fixed
+
+
 def set_resolution(dest, width, height):
     """Retune every generated source component's output resolution."""
     n = 0
@@ -578,14 +767,17 @@ def is_annotate(o):
 def clear(dest, components=True, annotations=True):
     """Destroy generated ops in `dest`.
 
-    DESTRUCTIVE: removes every `hydra_*` component and every Annotate COMP in
+    DESTRUCTIVE: removes every `hydra_*` COMPONENT and every Annotate COMP in
     that container, including annotations you added by hand. Scoped to `dest`,
     so keep the hydra components in their own container.
+
+    Only COMPs are touched. Helper DATs living alongside them -- `hydra_seq`
+    notably -- are named `hydra_*` too and must survive.
     """
     removed = []
     for child in list(dest.children):
-        if components and (HYDRA_TAG in child.tags
-                           or child.name.startswith('hydra_')):
+        if components and child.isCOMP and (HYDRA_TAG in child.tags
+                                            or child.name.startswith('hydra_')):
             removed.append(child.name)
             child.destroy()
         elif annotations and is_annotate(child):
