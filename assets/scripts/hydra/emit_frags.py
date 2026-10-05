@@ -62,10 +62,19 @@ MAIN = {
    fragColor = TDOutputSwizzle({name}(c0, c1{args}));
 }}""",
     'combineCoord': """void main() {{
-   vec2 st = vUV.st;
-   vec4 c0 = texture(sTD2DInputs[1], st);       // modulator (hydra's _c0)
-   vec2 st2 = {name}(st, c0{args});
-   fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st2)));
+   if (uvmode > 0.5) {{
+      // input 0 carries coordinates, not an image. hydra samples the modulator
+      // at the uv as it stands here -- i.e. after the coord ops that come later
+      // in the chain, which is exactly what arrives on input 0.
+      vec2 inSt = texture(sTD2DInputs[0], vUV.st).rg;
+      vec4 c0 = texture(sTD2DInputs[1], fract(inSt));
+      fragColor = TDOutputSwizzle(vec4({name}(inSt, c0{args}), 0.0, 1.0));
+   }} else {{
+      vec2 st = vUV.st;
+      vec4 c0 = texture(sTD2DInputs[1], st);    // modulator (hydra's _c0)
+      vec2 st2 = {name}(st, c0{args});
+      fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st2)));
+   }}
 }}""",
 }
 
@@ -147,8 +156,8 @@ def emit(spec, utils):
     if re.search(r'\bresolution\b', body):
         uniforms.append('uniform vec2 resolution;     // -> me.width, me.height')
     alias = TEXTURE_ALIAS.get(name)
-    if kind in ('src', 'coord'):
-        uniforms.append('uniform float uvmode;        // -> parent().par.Coordmode')
+    if kind in ('src', 'coord', 'combineCoord'):
+        uniforms.append('uniform float uvmode;        // -> Pipeline page, mode')
     for i in inputs:
         if alias and i['name'] == alias[0]:
             continue                                   # becomes a TOP input

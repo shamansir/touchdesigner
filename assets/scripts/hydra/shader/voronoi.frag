@@ -3,7 +3,7 @@
 // inputs: scale (5.0), speed (0.3), blending (0.3)
 
 uniform float time;          // -> absTime.seconds
-uniform float uvmode;        // -> parent().par.Coordmode
+uniform float uvmode;        // -> Pipeline page, mode
 uniform float scale;
 uniform float speed;
 uniform float blending;

@@ -45,6 +45,9 @@ HYDRA_TAG = 'hydra'             # marks generated components; survives .tox save
 DEFAULT_RES = (1280, 720)       # source components; everything else follows its input
 NONCOMMERCIAL_MAX = 1280        # the free licence caps output at 1280x1280
 
+# custom pages, in the order every component should show them
+PAGE_ORDER = ('Hydra', 'Pipeline', 'Time Sync', 'Output')
+
 # image inputs per hydra function class; `source` is always input 0
 CLASS_INPUTS = {
     'src':          [],
@@ -148,6 +151,26 @@ def set_color_par(o, prefix, rgb):
     return True
 
 
+def make_mode_par(page):
+    """Image vs coordinates: what this node processes, not how it outputs."""
+    m = page.appendMenu('Mode', label='mode')[0]
+    m.menuNames = ['image', 'coords']
+    m.menuLabels = ['Image', 'Coordinates']
+    m.default = m.val = 'image'
+    return m
+
+
+def sort_pages(comp):
+    """Same tab order on every component, whichever pages it happens to have."""
+    have = [pg.name for pg in comp.customPages]
+    ordered = [n for n in PAGE_ORDER if n in have] + [n for n in have
+                                                      if n not in PAGE_ORDER]
+    try:
+        comp.sortCustomPages(*ordered)
+    except Exception as e:
+        print(f'  !! {comp.path}: could not sort pages ({e})')
+
+
 def mirror_menu(page, source_par, name, label):
     """A custom menu par cloning an operator's menu, bound back to it.
 
@@ -232,7 +255,8 @@ def _uniforms(spec, text, par_exprs):
     if 'uniform vec2 resolution' in text:
         out.append(('resolution', ('me.width', 'me.height')))
     if uses_coordmode(text):
-        out.append(('uvmode', ('parent().par.Coordmode',)))
+        out.append(('uvmode',
+                    ("1.0 if parent().par.Mode.eval() == 'coords' else 0.0",)))
     for inp in spec['inputs']:
         n = inp['name']
         if inp['type'] == 'float':
@@ -381,8 +405,10 @@ def build(spec, dest):
     mirror_menu(opage, glsl.par.format, 'Pixelformat', 'pixel format')
 
     if uses_coordmode(text):
-        cm = opage.appendToggle('Coordmode', label='coordinate mode')[0]
-        cm.default = cm.val = False
+        ppage = comp.appendCustomPage('Pipeline')
+        make_mode_par(ppage)
+
+    sort_pages(comp)
 
     if wants_time:
         # embedded, not file-synced, so an exported .tox carries its own callback
@@ -511,8 +537,46 @@ def unique_name(dest, base):
     return f'{base}{i}'
 
 
+def expand_names(names):
+    """['osc*3', 'rotate'] -> ['osc', 'osc', 'osc', 'rotate'].
+
+    Accepts a list or one whitespace-separated string, so both of these work:
+
+        spawn(['osc*3', 'rotate'])
+        spawn('osc*3 rotate scale')
+
+    The count may sit on either side of the `*`, with or without spaces around
+    it -- `osc*3`, `3*osc` and `osc * 3` are the same.
+    """
+    if isinstance(names, str):
+        names = [names]
+    flat = ' '.join(str(n) for n in names).replace('*', ' * ').split()
+
+    out, i = [], 0
+    while i < len(flat):
+        token = flat[i]
+        if token == '*':                       # '<a> * <b>' -- one of them is a count
+            i += 1
+            continue
+        if i + 2 < len(flat) and flat[i + 1] == '*':
+            a, b = token, flat[i + 2]
+            if b.isdigit():
+                out += [a] * int(b)
+            elif a.isdigit():
+                out += [b] * int(a)
+            else:
+                print(f'  !! cannot read a count in {a!r} * {b!r}')
+            i += 3
+            continue
+        out.append(token)
+        i += 1
+    return out
+
+
 def spawn(names, dest=None, lib=None, postfix='', spacing=200, x=0, y=0):
     """Copy generated components by name, e.g. spawn(['osc', 'osc', 'rotate']).
+
+    Counts are supported: spawn(['osc*3', 'rotate']) or spawn('osc*3 rotate').
 
     Repeats are fine -- each copy gets a numeric suffix so names stay unique.
     `postfix` goes before that suffix: postfix='_a' gives hydra_osc_a.
@@ -527,7 +591,7 @@ def spawn(names, dest=None, lib=None, postfix='', spacing=200, x=0, y=0):
     dest = dest or lib.parent()
 
     made, missing = [], []
-    for i, name in enumerate(names):
+    for i, name in enumerate(expand_names(names)):
         original = lib.op(f'hydra_{name.lower()}')
         if not original:
             missing.append(name)
@@ -642,12 +706,25 @@ def upgrade(dest, specs=None, depth=8):
                 glsl.inputConnectors[len(image_inputs)].connect(t)
             set_order(t, len(image_inputs) + len(floats))
 
-        # and the toggle that drives the uvmode uniform
-        if uses_coordmode(text) and 'Coordmode' not in {p.name for p in comp.pars()}:
-            page = next((pg for pg in comp.customPages if pg.name == 'Output'),
-                        None) or comp.appendCustomPage('Output')
-            cm = page.appendToggle('Coordmode', label='coordinate mode')[0]
-            cm.default = cm.val = False
+        # the Mode menu that drives the uvmode uniform, on its own page.
+        # `Coordmode` was an earlier toggle on the Output page -- carry its value
+        # across and remove it, so the two can't disagree.
+        if uses_coordmode(text):
+            names = {p.name for p in comp.pars()}
+            was_on = False
+            if 'Coordmode' in names:
+                old = comp.par.Coordmode
+                was_on = bool(old.eval())
+                try:
+                    old.destroy()
+                except Exception as e:
+                    print(f'  !! {comp.path}: could not remove Coordmode ({e})')
+            if 'Mode' not in names:
+                page = next((pg for pg in comp.customPages
+                             if pg.name == 'Pipeline'), None) \
+                    or comp.appendCustomPage('Pipeline')
+                m = make_mode_par(page)
+                m.val = 'coords' if was_on else 'image'
 
         # Argument plumbing, for copies predating the per-argument CHOP inputs:
         # the uniform expression is op('<arg>')[0].eval(), so a missing In CHOP
@@ -699,6 +776,7 @@ def upgrade(dest, specs=None, depth=8):
                     par_exprs[inp['name']] = tuple(f'parent().par.{p.name}'
                                                    for p in pars)
 
+        sort_pages(comp)
         try:
             apply_uniforms(glsl, spec, text, par_exprs)
         except Exception as e:                  # never let one bad comp stop the sweep

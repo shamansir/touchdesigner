@@ -151,8 +151,12 @@ hydra_osc/
   time_exec           Parameter Execute DAT, time-using functions only
   out                 Out TOP     also the component's Operator Viewer
   + custom page 'Hydra'       one parameter per argument
-  + custom page 'Output'      resolution (sources), input smoothness, pixel format
+  + custom page 'Pipeline'    image vs coordinates, where the shader supports it
   + custom page 'Time Sync'   time-using functions only
+  + custom page 'Output'      resolution (sources), input smoothness, pixel format
+
+Pages always appear in that order (`PAGE_ORDER`), whichever of them a given
+function happens to have.
 ```
 
 **Arguments resolve in one of two ways.** Connect a CHOP to an argument's
@@ -174,10 +178,15 @@ originals:
 
 ```python
 b.spawn(['osc', 'osc', 'rotate', 'scale'])
+b.spawn(['osc*3', 'rotate'])                   # counts
+b.spawn('osc*3 rotate scale')                  # or one string
 b.spawn(['osc', 'rotate'], postfix='_a')       # hydra_osc_a, hydra_rotate_a
 b.spawn(['noise'], dest=op('/project1/sketch2'))
 b.spawn(['osc'], lib=op('/some/other/hydra'))  # a different library
 ```
+
+`osc*3`, `3*osc` and `osc * 3` are equivalent, and a whitespace-separated string
+works in place of a list.
 
 Repeats in the list are fine — each copy gets a numeric suffix, so
 `['osc', 'osc']` yields `hydra_osc` and `hydra_osc1`. `postfix` lands before that
@@ -304,8 +313,8 @@ hydra_coords ──→ hydra_rotate ──→ hydra_osc ──→ …
 ```
 
 - **`hydra_coords`** is the identity map that seeds the chain, in the Source group.
-- **`coordinate mode`** (Output page) switches a component between image and
-  coordinate handling. Off by default: existing patches are untouched.
+- **`mode`** on the **Pipeline** page switches a component between `Image` and
+  `Coordinates`. `Image` by default: existing patches are untouched.
 - Sources gain a **`coords`** input, after their image inputs.
 - **Use 32-bit float** on every TOP in the coordinate path. Coordinates leave
   0..1 immediately and anything fixed-point clips them.
@@ -316,8 +325,24 @@ runs first. `osc().rotate().scale()` becomes
 `coords → scale → rotate → osc`. Faithful to evaluation order, backwards from how
 it reads.
 
-Not covered: `combineCoord` (the `modulate*` family) stays image-only for now —
-its modulator is an image sampled mid-chain, which needs its own design pass.
+`combineCoord` (the `modulate*` family) works too. Input 0 carries the coordinate
+map, input 1 stays the modulator image, and the modulator is sampled at the
+**incoming coordinates** — hydra captures `vec2 uv_c_i0 = uv` after the coord ops
+that come later in the chain, which is exactly what arrives on input 0.
+
+One approximation there: hydra's modulator is another analytic sub-chain, while
+yours is a rasterized texture, so sampling it outside `[0,1]` has to wrap
+(`fract`). It matches wherever the modulator chain ends in something bounded or
+already periodic.
+
+Which functions actually need this mode — the ones whose coordinates escape
+`[0,1]` (everything else ends in `fract()` and is faithful in image mode):
+
+| needs Coordinates | safe in Image |
+|---|---|
+| `rotate`, `scale` (amount < 1), `kaleid` | `pixelate`, `repeat`, `repeatX/Y` |
+| `modulate`, `modulateScale`, `modulateRotate` | `scroll`, `scrollX/Y` |
+| `modulateKaleid`, `modulateHue` | `modulatePixelate`, `modulateRepeat*`, `modulateScrollX/Y` |
 
 ## Extensions
 

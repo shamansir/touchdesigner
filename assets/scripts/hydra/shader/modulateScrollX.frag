@@ -3,6 +3,7 @@
 // inputs: scrollX (0.5), speed (0.0)
 
 uniform float time;          // -> absTime.seconds
+uniform float uvmode;        // -> Pipeline page, mode
 uniform float scrollX;
 uniform float speed;
 
@@ -15,8 +16,17 @@ vec2 modulateScrollX(vec2 _st, vec4 _c0, float scrollX, float speed) {
 }
 
 void main() {
-   vec2 st = vUV.st;
-   vec4 c0 = texture(sTD2DInputs[1], st);       // modulator (hydra's _c0)
-   vec2 st2 = modulateScrollX(st, c0, scrollX, speed);
-   fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st2)));
+   if (uvmode > 0.5) {
+      // input 0 carries coordinates, not an image. hydra samples the modulator
+      // at the uv as it stands here -- i.e. after the coord ops that come later
+      // in the chain, which is exactly what arrives on input 0.
+      vec2 inSt = texture(sTD2DInputs[0], vUV.st).rg;
+      vec4 c0 = texture(sTD2DInputs[1], fract(inSt));
+      fragColor = TDOutputSwizzle(vec4(modulateScrollX(inSt, c0, scrollX, speed), 0.0, 1.0));
+   } else {
+      vec2 st = vUV.st;
+      vec4 c0 = texture(sTD2DInputs[1], st);    // modulator (hydra's _c0)
+      vec2 st2 = modulateScrollX(st, c0, scrollX, speed);
+      fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], fract(st2)));
+   }
 }

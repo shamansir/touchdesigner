@@ -3,7 +3,7 @@
 // inputs: speed (0.0)
 
 uniform float time;          // -> absTime.seconds
-uniform float uvmode;        // -> parent().par.Coordmode
+uniform float uvmode;        // -> Pipeline page, mode
 uniform float speed;
 
 #define COORD_IN 0

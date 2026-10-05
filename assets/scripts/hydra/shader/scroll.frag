@@ -3,7 +3,7 @@
 // inputs: scrollX (0.5), scrollY (0.5), speedX (0.0), speedY (0.0)
 
 uniform float time;          // -> absTime.seconds
-uniform float uvmode;        // -> parent().par.Coordmode
+uniform float uvmode;        // -> Pipeline page, mode
 uniform float scrollX;
 uniform float scrollY;
 uniform float speedX;

@@ -3,7 +3,7 @@
 // inputs: scale (10.0), offset (0.1)
 
 uniform float time;          // -> absTime.seconds
-uniform float uvmode;        // -> parent().par.Coordmode
+uniform float uvmode;        // -> Pipeline page, mode
 uniform float scale;
 uniform float offset;
 
