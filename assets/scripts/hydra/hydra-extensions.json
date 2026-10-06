@@ -1,11 +1,11 @@
 {
   "_comment": [
     "Additions to hydra's own function table, merged over hydra-functions.json by",
-    "both emit_frags.py and build_hydra.py. Kept separate so regenerating the",
+    "build_hydra.py. Kept separate so regenerating the",
     "upstream JSON never discards them.",
     "",
     "An input marked with \"extension\" is NOT passed to the hydra function -- its",
-    "body stays verbatim. The emitter applies it at the call site instead.",
+    "body stays verbatim. hydra_compile applies it around the call instead.",
     "",
     "blend_amount: hydra gives add/sub/mult/blend an `amount` that fades the result",
     "back toward the source -- (result)*amount + _c0*(1-amount). layer, diff and",

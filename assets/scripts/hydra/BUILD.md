@@ -12,13 +12,15 @@ Research and design rationale: `claude/HYDRA_RESEARCH.md`.
 | `hydra-functions.json` | the 52 function specs, extracted from hydra's `glsl-functions.js` |
 | `hydra-extensions.json` | deliberate additions to that table — merged over it at load |
 | `generate-hydra-functions.sh` | regenerates that JSON from hydra's source |
-| `emit_frags.py` | writes `shader/*.frag` from the JSON |
-| `build_hydra.py` | builds the TD components from the JSON + shaders |
+| `hydra-utils.glsl` | hydra's `_noise`, `_luminance`, `_rgbToHsv`, `_hsvToRgb`, verbatim |
+| `build_hydra.py` | builds and upgrades the TD components from the JSON |
+| `hydra_compile.py` | generates each component's shader — embedded into every component |
 | `fft_chop.py` | Script CHOP callbacks: hydra's `a.fft[n]` |
 | `time_exec.py` | Parameter Execute callbacks, embedded into time-using components |
 | `hydra_seq.py` | hydra's array arguments (`[1,2,3].fast().ease()`) — optional |
-| `shader/*.frag` | **generated** — do not hand edit |
-| `shader/_utils.glsl` | hydra's `_noise`, `_luminance`, `_rgbToHsv`, `_hsvToRgb` |
+
+There are no shader files: each component stores its function on itself and
+generates its shader from that (see **Modes**).
 
 ## One-time setup in TouchDesigner
 
@@ -28,13 +30,11 @@ Python files. For each: set `file`, turn on **Sync to File** and **Load on Start
 | DAT name | file |
 |---|---|
 | `build_hydra` | `assets/scripts/hydra/build_hydra.py` |
-| `emit_frags` | `assets/scripts/hydra/emit_frags.py` |
 | `hydra_seq` | `assets/scripts/hydra/hydra_seq.py` (only if you want array args) |
 
 Paths are relative to the `.toe`, so keep them relative — they stay portable.
 
-`build_hydra` and `emit_frags` are *imported*, not run: use the Textport, not
-Run Script.
+`build_hydra` is *imported*, not run: use the Textport, not Run Script.
 
 ## Commands
 
@@ -47,12 +47,15 @@ b.build_all(op('/project1/hydra'))    # build everything (replaces same-named)
 b.rebuild(op('/project1/hydra'))      # wipe all generated ops, then build
 b.clear(op('/project1/hydra'))        # wipe only
 b.build_audio(op('/project1/hydra'))  # just hydra_fft
-b.upgrade(op('/project1'))               # repair placed copies after a shader change
+b.upgrade(op('/project1'))               # bring placed copies up to the current code
 b.export_tox(op('/project1/hydra'))      # write the .tox tree
 b.export_palette(op('/project1/hydra'))  # write into the TD user palette
 b.layout_groups(op('/project1/hydra'), b.load_specs())   # re-arrange only
 b.build(spec, op('/project1/hydra'))  # a single component, from one spec dict
 b.spawn(['osc', 'osc', 'rotate', 'scale'])               # copies to patch with
+b.set_mode(op('/project1/sketch'), 'image')  # Mode on every placed component
+b.cook_report(op('/project1'))           # GPU/CPU cook time per component
+b.version_report(op('/project1'))        # components not built from the current code
 ```
 
 `build_all` and `rebuild` take `layout=False`, `audio=False`, `tox=False`,
@@ -65,34 +68,31 @@ b.spawn(['osc', 'osc', 'rotate', 'scale'])               # copies to patch with
 
 ## Upgrading placed copies
 
-Shaders are file-synced and **shared by every copy in every patch**. Regenerating
-them (a hydra update, or a new feature like coordinate mode) therefore changes
-components you placed weeks ago — but a copy keeps its own uniform entries,
-inputs and parameters, which then no longer match the shader. The symptom is a
-checkerboard: the GLSL TOP failing to compile or reporting an unassigned uniform.
+A placed copy carries its own internals — parameters, In OPs, the embedded
+compiler, the stored function spec — so a change to the builder or the compiler
+does not reach it by itself.
 
 ```python
 b.upgrade(op('/project1'))      # searches recursively, repairs in place
+b.version_report(op('/project1'))   # what is still stale
 ```
 
-It re-applies uniforms, adds missing inputs and parameters, and leaves wiring,
-parameter values and node positions alone. It identifies each component by its
-`hydra:<func>` tag, so renamed copies (`hydra_osc3`) are still recognised.
-
-Run it after every `emit_frags` run that changes shader uniforms.
+`upgrade` runs the same `ensure()` as a fresh build: it creates whatever the copy
+lacks, rewrites what is generated (spec, compiler, callbacks, shader), and keeps
+wiring, parameter values and node positions. It identifies each component by its
+node name, then its `hydra:fn:` tag, so renamed copies (`hydra_osc3`) are still
+recognised.
 
 `build_all` replaces components one by one, so it leaves behind components whose
 function was renamed or removed upstream. `rebuild` does not.
 
-To regenerate the shaders after a hydra update:
+After a hydra update, refresh the JSON and rebuild:
 
 ```bash
 ./assets/scripts/hydra/generate-hydra-functions.sh   # refresh the JSON
-python3 assets/scripts/hydra/emit_frags.py           # rewrite shader/*.frag
 ```
 
-then `b.rebuild(...)` in TD. Or from the Textport:
-`mod('/project1/hydra/emit_frags').emit_all()`.
+then `b.rebuild(...)` and `b.upgrade(...)` in TD.
 
 ## Exported .tox files
 
@@ -111,11 +111,8 @@ components/hydra/
 Existing files are overwritten, so the tree always matches the last build. Drag
 one into any project to use a single function without the builder.
 
-A `.tox` embeds its internals, including the shader **text** as it stood at save
-time — but the Text DATs keep their `file` + Sync to File pars, so a component
-dropped into another project re-reads `assets/scripts/hydra/shader/*.frag`
-*relative to that project's* `.toe`. Either keep the same folder layout, or turn
-Sync to File off in the exported copies to freeze the shaders.
+A `.tox` is self-contained: the function spec, the compiler and every callback
+live inside it, and nothing is file-synced. Drop it into any project.
 
 Renaming a function upstream leaves its old `.tox` behind — export only writes,
 it never deletes. Clear the tree by hand when that happens.
@@ -146,14 +143,20 @@ hydra_osc/
   source, modulator   In TOPs     image inputs, class-dependent
   frequency, sync…    In CHOPs    one per numeric argument
   frequency_default   Constant CHOPs, feeding each In CHOP's fallback input
-  pixel               Text DAT    file-synced to shader/<name>.frag
+  pixel               Text DAT    the generated shader -- not a file
   glsl                GLSL TOP    the internals
-  time_exec           Parameter Execute DAT, time-using functions only
   out                 Out TOP     also the component's Operator Viewer
+  boundary0, …        Select TOPs textures from further up a compiled chain
+  compile             Text DAT    hydra_compile.py, embedded
+  chain_exec          OP Execute DAT, recompiles on rewire / rename / Viewer flag
+  mode_exec           Parameter Execute DAT, recompiles on Mode / Compile
+  time_exec           Parameter Execute DAT, time-using functions only
+  storage hydra_spec  the function: body, inputs, utilities -- what `compile` reads
   + custom page 'Hydra'       one parameter per argument
-  + custom page 'Pipeline'    image vs coordinates, where the shader supports it
+  + custom page 'Pipeline'    mode (Compiled / Image), Compile
   + custom page 'Time Sync'   time-using functions only
   + custom page 'Output'      resolution (sources), input smoothness, pixel format
+  + custom page 'Version'     version, compiler hash, build time -- read only
 
 Pages always appear in that order (`PAGE_ORDER`), whichever of them a given
 function happens to have.
@@ -213,8 +216,9 @@ tagged components instead; pass `lib=` if it guesses wrong.
 
 Source functions (`osc`, `noise`, `shape`, `voronoi`, `gradient`, `solid`) have
 nothing upstream to inherit a resolution from, so they get an **Output** page with
-a `resolution` parameter, defaulting to `DEFAULT_RES` — 1280×720. Every other
-class follows its input, so setting the sources sets the chain.
+a `resolution` parameter, defaulting to `DEFAULT_RES` — 1280×720. Everything
+else takes the resolution of its chain's root source (Compiled) or of its input
+(Image), so setting the sources sets the chain.
 
 Retune a whole container at once:
 
@@ -294,61 +298,117 @@ re-enter `absTime.seconds` or rebuild the component.
 **Input 1 of a `combineCoord` is the modulator** — `a.modulate(b)` puts `b`
 there. The In TOPs are named `source` and `modulator` for this reason.
 
-## Coordinate mode
+## Modes
 
-Hydra does not rotate a picture of `osc` — it rotates the *coordinate* and then
-evaluates `osc` there, analytically, over an unbounded domain. A node graph
-rasterizes each stage, so `hydra_rotate` sampling `hydra_osc` runs off the edge of
-a finite texture and wraps, leaving a seam. `osc(9,-0.3,900).rotate(6)` shows it
-plainly: continuous diagonal stripes in hydra, a hard diagonal break here.
-
-**Coordinate mode** restores hydra's model. `coord` components transform a
-*coordinate map* (RG = `st`) instead of sampling an image, and `src` components
-read their `st` from one — so the source is evaluated at the final coordinates,
-however far outside 0..1 they land.
+Every component has a **Mode** on its **Pipeline** page. **Compiled** is the
+default; **Image** is the exception.
 
 ```
-hydra_coords ──→ hydra_rotate ──→ hydra_osc ──→ …
-(identity st)     Coordmode on     Coordmode on
+osc ──→ rotate ──→ scale        all Compiled: scale's shader evaluates
+                                osc(rotate(scale(st))), as hydra does
 ```
 
-- **`hydra_coords`** is the identity map that seeds the chain, in the Source group.
-- **`mode`** on the **Pipeline** page switches a component between `Image` and
-  `Coordinates`. `Image` by default: existing patches are untouched.
-- Sources gain a **`coords`** input, after their image inputs.
-- **Use 32-bit float** on every TOP in the coordinate path. Coordinates leave
-  0..1 immediately and anything fixed-point clips them.
+**Compiled** is hydra's own model, in hydra's wiring order. The component walks
+the wiring upstream and fuses every Compiled hydra component it finds into one
+shader, the way hydra's `generate-glsl.js` does. The source is evaluated at the
+final coordinate, so nothing wraps, nothing seams, nothing is resampled, and
+`fract` happens once, inside `src`/`prev`. Any pixel format works.
 
-**Coord nodes wire in reverse of the hydra chain.** Hydra emits
-`st = c_last(st); … st = c_first(st); src(st)`, so the last coord op in the sketch
-runs first. `osc().rotate().scale()` becomes
-`coords → scale → rotate → osc`. Faithful to evaluation order, backwards from how
-it reads.
+**Image** renders this component on its own and makes it a texture for
+everything downstream — a render-here point. Use it where re-evaluating is
+wasteful: a slow source shared by several branches (Compiled evaluates it once per
+branch, per pixel), or one that does not change over time — rendered as a
+texture, it cooks only when its parameters change. Downstream of it, coordinate
+ops sample a finite texture again, so they can seam; keep Image for sources and
+color work, not ahead of `rotate`/`scale`/`kaleid`.
 
-`combineCoord` (the `modulate*` family) works too. Input 0 carries the coordinate
-map, input 1 stays the modulator image, and the modulator is sampled at the
-**incoming coordinates** — hydra captures `vec2 uv_c_i0 = uv` after the coord ops
-that come later in the chain, which is exactly what arrives on input 0.
+```python
+b.set_mode(op('/project1/sketch'), 'compiled')   # or 'image'
+```
 
-One approximation there: hydra's modulator is another analytic sub-chain, while
-yours is a rasterized texture, so sampling it outside `[0,1]` has to wrap
-(`fract`). It matches wherever the modulator chain ends in something bounded or
-already periodic.
+**Boundaries.** Anything a compiled chain does not inline is read as a texture,
+`texture(t, fract(uv))` — exactly what hydra's `src()` does:
 
-Which functions actually need this mode — the ones whose coordinates escape
-`[0,1]` (everything else ends in `fract()` and is faithful in image mode):
+- an Image-mode component
+- whatever feeds `src` or `prev` — in hydra that is a buffer, not a chain
+- anything that is not a hydra component (a Feedback TOP, a Movie File In, …)
 
-| needs Coordinates | safe in Image |
+The GLSL TOP has no Samplers page, so a boundary arrives on one of its inputs: the
+component's own In TOP when the texture is wired into this component, a Select
+TOP (`boundary0`, …) pointing at another component's In TOP when it enters further
+up the chain.
+
+**What gets compiled.** Image components always. Compiled ones only when
+something looks at them:
+
+- **Viewer on** — its node viewer shows the chain up to there, exactly.
+- **An output** — its texture is read by something outside a compiled chain: a
+  non-hydra operator, an Image-mode component, a `src` input, or nothing at all
+  (end of a chain).
+
+Everything else keeps its last shader and, with nothing pulling on it, never
+cooks. A viewed intermediate costs a full pass of the chain above it, every frame.
+
+**When it recompiles.** On rewiring (the component and everything downstream),
+renaming, a Viewer flag, a Mode change, or the **Compile** pulse. Triggers within
+one frame are collapsed, and an identical result is not reinstalled. Parameter and
+CHOP changes need no recompile — every argument is a uniform expression pointing
+at its own component's In CHOP.
+
+**The generated shader.** In `pixel`. `main()` is one statement per value:
+
+```glsl
+vec2 uv0 = scale_0(st, u0_amount, …);
+vec2 uv1 = rotate_1(uv0, u1_angle, u1_speed);
+vec4 c2 = osc_2(uv1, u2_frequency, u2_sync, u2_offset);
+```
+
+Hydra itself nests one expression, which repeats the incoming coordinate in every
+`modulate*` and so grows as 2^k for k chained modulates. Statements keep it linear,
+and a component used twice at the same coordinate is evaluated once. Every
+function is pure, so the result is identical.
+
+**Time.** Each inlined function keeps its own component's Time
+(`#define time u<k>_time` around its body). With every Time equal — the default, or
+after Propagate Time Expr — this is hydra's one global `time`.
+
+**Paths.** Uniforms and Select TOPs refer to other components by *relative* path,
+so copying a whole sketch container keeps every chain pointing inside the copy.
+Renames recompile by themselves.
+
+**Comparing speed.** `b.cook_report(op('/project1/sketch'))` prints last-frame GPU
+and CPU cook time per component. Components that did not cook report 0.
+
+The trigger callbacks rely on OP Execute toggles (`wirechange`, `flagchange`,
+`namechange`, `pathchange`); a `!!` line in the Textport at build time means a name
+differs in your TD build.
+
+## Versions
+
+Every component carries a read-only **Version** page:
+
+| field | what it is |
 |---|---|
-| `rotate`, `scale` (amount < 1), `kaleid` | `pixelate`, `repeat`, `repeatX/Y` |
-| `modulate`, `modulateScale`, `modulateRotate` | `scroll`, `scrollX/Y` |
-| `modulateKaleid`, `modulateHue` | `modulatePixelate`, `modulateRepeat*`, `modulateScrollX/Y` |
+| `version` | `VERSION` in `build_hydra.py` — bumped by hand on every change to the builder, the compiler or `hydra-utils.glsl` |
+| `compiler` | first 8 hex digits of the SHA-1 of `hydra_compile.py` — the embedded `compile` DAT; `-` on components without one |
+| `built` | when this copy was built or last upgraded |
+
+`build` and `upgrade` stamp it; spawned copies inherit the library's. The compiler
+hash changes by itself, so it catches a copy that missed an `upgrade` even when
+`VERSION` was not bumped.
+
+```python
+b.version_report(op('/project1'))   # lists every stale copy; empty = all current
+```
+
+When reporting a problem, the version and compiler hash of the component
+involved say exactly which code it runs.
 
 ## Extensions
 
-`hydra-extensions.json` adds inputs hydra itself does not have. Both `emit_frags.py`
-and `build_hydra.py` merge it over `hydra-functions.json` at load, so regenerating
-the upstream table never discards it.
+`hydra-extensions.json` adds inputs hydra itself does not have. `build_hydra.py`
+merges it over `hydra-functions.json` at load, so regenerating the upstream table
+never discards it.
 
 Today it gives **`layer`, `diff` and `mask` an `amount`**, which hydra provides for
 `add`, `sub`, `mult` and `blend` but not for those three. It follows hydra's own
@@ -356,12 +416,13 @@ convention — `mix(_c0, result, amount)`, i.e. fade the result back toward the
 source — and **defaults to 1, which is exactly hydra's behaviour**. Only a value
 below 1 diverges from upstream.
 
-An input marked `"extension"` is not passed to the hydra function; the emitter
-applies it at the call site, so the function body stays verbatim:
+An input marked `"extension"` is not passed to the hydra function; the compiler
+wraps the call instead, so the function body stays verbatim:
 
 ```glsl
-vec4 result = diff(c0, c1);
-fragColor = TDOutputSwizzle(mix(c0, result, amount));
+vec4 diff_1_x(vec4 _c0, vec4 _c1, float amount) {
+   return mix(_c0, diff_1(_c0, _c1), amount);
+}
 ```
 
 The builder needs no special case — it sees a normal `float` input and makes the
@@ -394,12 +455,9 @@ Every generated component is tagged, and tags survive a `.tox` save/load:
 | `hydra:fn:<func>` | which function, e.g. `hydra:fn:modulateScrollX` |
 | `hydra:class:<class>` | which group, e.g. `hydra:class:combineCoord` |
 
-The `fn:`/`class:` namespacing is load-bearing. An earlier scheme wrote both as
-bare `hydra:<value>`, and `hydra:src` — the class tag on every source — is then
-indistinguishable from the *function* named `src`. Components were identified by
-whichever tag the set yielded first, so an `osc` could be read as a `src` and get
-that shader's uniform list: no `time`, no arguments, everything unassigned, white
-output. `upgrade` retags to the namespaced form and identifies by node name first.
+The `fn:`/`class:` namespacing is load-bearing: a bare `hydra:src` could be the
+class of every source or the *function* named `src`. `upgrade` rewrites the tags
+and identifies components by node name first.
 
 This is how **Propagate Time Expr** tells hydra components from everything else,
 and how `clear` finds what to remove even if someone renamed a component. To find
