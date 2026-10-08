@@ -1,40 +1,16 @@
-"""Generate a hydra component's shader -- fused with its upstream chain, the way
-hydra does, or on its own.
+"""Generate a hydra component's shader: fused with its upstream chain, as
+hydra's generate-glsl.js (v1.3.29) does, in Compiled mode -- on its own in
+Image mode. Also every callback the component's exec DATs forward to.
 
-Hydra never rasterizes intermediate stages. `osc().rotate().posterize()` becomes
-one shader, `posterize(osc(rotate(st, ...), ...), ...)`, so the source is
-evaluated analytically at the final coordinate -- no wrap, no seam, no
-resampling. This module walks the TD wiring upstream from a component and emits
-that same chain (hydra src/generate-glsl.js, v1.3.29), then installs it in the
-component's GLSL TOP.
-
-Embedded verbatim into every component as the `compile` Text DAT, so an
-exported .tox carries it -- this file is the editable master. Re-run the
-builder (or `upgrade`) after changing it.
-
-Two modes, on the component's Pipeline page:
-
-  Compiled  every upstream component that is itself Compiled is inlined. Each
-            becomes one instance of its function, body verbatim, renamed
-            <fn>_<k>, with its arguments as uniforms u<k>_<arg> reading that
-            component's own CHOP input. `time` is #defined per instance to that
-            component's Time, so per-component clocks survive; with equal clocks
-            this is exactly hydra.
-  Image     nothing is inlined: the component's own function, its inputs read as
-            textures. A render-here point -- downstream components read its
-            texture instead of re-evaluating it, which is cheaper for a slow or
-            static source shared by several branches.
-
-Anything not inlined is a boundary, read as texture(<input>, fract(uv)) -- what
-hydra's own src() does: an Image-mode component, a plain TD TOP, the texture fed
-to `src`/`prev`. A boundary is always the In TOP of the component that reads it:
-wired straight into the GLSL TOP when that is this component, through a Select
-TOP when it is further up the chain.
-
-A Compiled component is only (re)compiled when something looks at it: Viewer on,
-or an output -- its texture is read by something outside a compiled chain.
-Everything else keeps its last shader and, with nothing pulling it, never cooks.
+Embedded into every component as the `compile` Text DAT; this file is the
+master -- `upgrade` after changing it. How the modes, boundaries and triggers
+behave: BUILD.md, "Modes".
 """
+
+# --- shared facts -----------------------------------------------------------------
+# build_hydra loads this file too and takes these from here, so they exist once.
+# Nothing at module level may need TouchDesigner: the builder and the tests load
+# it outside a component.
 
 HYDRA_TAG = 'hydra'
 SPEC_KEY = 'hydra_spec'          # set by the builder: see build_hydra.store_spec
@@ -42,8 +18,39 @@ SIG_KEY = 'hydra_compiled_sig'   # what is installed now -- skip identical insta
 PENDING_KEY = 'hydra_compile_frame'
 MAX_DEPTH = 64
 
-# `src` and `prev` read a texture -- in hydra a buffer, never an inlined chain
+# image inputs per hydra function class, as In TOP names; `source` is input 0
+CLASS_INPUTS = {
+    'src':          [],
+    'coord':        ['source'],
+    'color':        ['source'],
+    'combine':      ['source', 'with'],
+    'combineCoord': ['source', 'modulator'],   # modulator is hydra's _c0
+}
+
+# `src` and `prev` are class src but read a texture -- in hydra a buffer, never
+# an inlined chain: the In TOP it arrives on, and the sampler name the body uses
 TEXTURE_INPUT = {'src': 'source', 'prev': 'source'}
+TEXTURE_ALIAS = {'src': 'tex', 'prev': 'prevBuffer'}
+
+UTILS = ('_luminance', '_noise', '_rgbToHsv', '_hsvToRgb')
+
+
+def inputs_for(spec):
+    """In TOP names of a function, in input order."""
+    name = spec['name']
+    return [TEXTURE_INPUT[name]] if name in TEXTURE_INPUT else CLASS_INPUTS[spec['type']]
+
+
+def uses_of(body):
+    """Which of hydra's globals a function body reads."""
+    import re
+    return [w for w in ('time', 'resolution') if re.search(rf'\b{w}\b', body)]
+
+
+def par_name(hydra_name):
+    """repeatX -> Repeatx. TD custom par names are Capitalized alphanumerics."""
+    return hydra_name[0].upper() + hydra_name[1:].lower()
+
 
 SIGNATURE = {
     'src':          ('vec4', ['vec2 _st']),
@@ -114,10 +121,6 @@ def downstream(comp):
                 queue.append(nxt)
                 found.append(nxt)
     return found
-
-
-def par_name(hydra_name):
-    return hydra_name[0].upper() + hydra_name[1:].lower()
 
 
 # --- code generation -------------------------------------------------------------
@@ -410,9 +413,6 @@ def install(comp, inline):
     # compiles, and does not recompile when they change afterwards.
     _set_inputs(comp, glsl, chain.boundaries)
     _set_uniforms(glsl, uniforms)
-    if dat.par.syncfile.eval():
-        dat.par.syncfile = False     # never write generated text back to a file
-        dat.par.file = ''
     dat.text = text
     if glsl.par.pixeldat.eval() != dat:
         glsl.par.pixeldat = dat
@@ -451,3 +451,75 @@ def schedule(comp, down=True, up=False):
         t.store(PENDING_KEY, frame)
         run('args[0].op("compile").module.compile_now(args[0])', t,
             delayFrames=1, delayRef=op.TDResources)
+
+
+# --- callbacks ----------------------------------------------------------------------
+# The component's exec DATs are one-line shims onto these (see build_hydra
+# SHIMS), so all embedded code lives in this one file, under one hash.
+
+def on_wire(comp):
+    schedule(comp, down=True, up=True)
+
+
+def on_flag(comp):
+    schedule(comp, down=False)                   # the Viewer flag decides compiling
+
+
+def on_rename(comp):
+    schedule(comp, down=True)                    # compiled chains refer to it by path
+
+
+def on_par(par):
+    """Value change or pulse on Mode, Compile or Propagatetime."""
+    comp = par.owner
+    if par.name == 'Propagatetime':
+        propagate_time(comp)
+    else:
+        schedule(comp, down=True, up=True)
+
+
+def _time_source(comp):
+    """(is_expression, text) for the component's Time parameter."""
+    p = comp.par.Time
+    if p.mode == ParMode.EXPRESSION:
+        return True, p.expr
+    return False, p.eval()
+
+
+def _all_downstream(comp):
+    """Every operator reachable through comp's outputs, breadth first, no repeats."""
+    seen, queue, found = {comp.id}, [comp], []
+    while queue:
+        for connector in queue.pop(0).outputConnectors:
+            for conn in connector.connections:
+                nxt = conn.owner
+                if nxt.id not in seen:
+                    seen.add(nxt.id)
+                    queue.append(nxt)
+                    found.append(nxt)
+    return found
+
+
+def propagate_time(comp):
+    """Copy this component's Time (expression, else value) onto every hydra
+    component downstream that has one. Only `hydra`-tagged operators are
+    touched, so an unrelated operator with a Time parameter is left alone."""
+    is_expr, source = _time_source(comp)
+    touched, skipped = [], 0
+    for o in _all_downstream(comp):
+        if HYDRA_TAG not in o.tags:
+            continue
+        if 'Time' not in [p.name for p in o.customPars]:
+            skipped += 1          # a hydra component whose function has no time
+            continue
+        if is_expr:
+            o.par.Time.expr = source
+        else:
+            o.par.Time.mode = ParMode.CONSTANT
+            o.par.Time.val = source
+        touched.append(o.name)
+
+    what = source if is_expr else f'constant {source}'
+    print(f'{comp.name}: propagated Time = {what} to {len(touched)} hydra op(s)'
+          + (': ' + ', '.join(touched) if touched else '')
+          + (f' ({skipped} without a Time par)' if skipped else ''))

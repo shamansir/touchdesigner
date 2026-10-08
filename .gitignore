@@ -16,3 +16,6 @@ assets/3d/**/*.3DS
 assets/3d/**/*.gsm
 assets/3d/**/*.mtl
 __pycache__
+
+# hydra build_hydra.dump_shaders() output
+build/hydra-shaders/

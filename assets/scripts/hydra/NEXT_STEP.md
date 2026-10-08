@@ -1,5 +1,50 @@
 # Next step
 
+## Done in 0.4.0 (2026-10-06)
+
+Runtime Python 1629 → 1362 lines (`build_hydra.py` 1072 → 837,
+`hydra_compile.py` 557 → 525). Not yet run in TouchDesigner; 27 tests pass.
+
+- TD parameter names written exactly, checked against TD's offline help;
+  `find_par` and its candidate lists, `_toggle`, `set_color_par`, `darken` gone.
+  Constant CHOP is `const0name`/`const0value` — the first candidates tried before,
+  `name0`/`value0`, never existed.
+- Migration code from 0.2.0/0.3.0 dropped: `_drop_legacy`, the Mode menu rewrite,
+  the `hydra_coords` notice, the `pixel` un-sync guard, name-based identification
+  and the untagged-copy search.
+- `SLICE` dropped; `expand_names` takes `name*count` only.
+- Module and function docstrings that repeated BUILD.md shortened.
+
+Verified in TD (2026-10-06): connectors keep hydra's order — `connectorder`
+exists on In OPs even though the offline help does not list it.
+
+## Done in 0.3.0 (2026-10-06)
+
+Not yet run in TouchDesigner. `python3 -m unittest discover assets/scripts/hydra/tests`
+passes (27 tests).
+
+| what | where |
+|---|---|
+| Test suite with an opaque-path TD mock — confirmed to catch the 0.2.0 path bug | `tests/` |
+| One embedded module: every callback lives in `hydra_compile.py`; `chain_exec` and the new `par_exec` are one-line shims; `time_exec.py` merged in, `mode_exec`/`time_exec` DATs removed on upgrade | `on_wire`, `on_flag`, `on_rename`, `on_par`, `propagate_time`; `build_hydra._shim` |
+| Shared facts defined once in `hydra_compile.py`, loaded by the builder: tag, spec key, class inputs, texture aliases, utils, `inputs_for`, `uses_of`, `par_name` | `build_hydra._load_core` |
+| `upgrade` identifies components by stored spec first | `spec_name` |
+| `set_resolution` / `set_output` search recursively | `_placed` |
+| `dump_shaders` writes every generated shader to `build/hydra-shaders/` (git-ignored) | `build_hydra.dump_shaders` |
+
+## Refactor ideas not done yet
+
+- **Derive instead of store**: `uses` and `alias` in the stored spec, and the
+  `UTILS` constant, can be computed from the body and the sections of
+  `hydra-utils.glsl` at compile time.
+- **TD Clone instead of `upgrade`**: spawned copies cloning the library
+  original would sync automatically, but every per-copy generated op (`pixel`,
+  `glsl` uniforms and inputs, `boundary*`) needs Clone Immune, and copies would
+  depend on the library path — against self-contained `.tox` files. Prototype on
+  one component first.
+- **Custom functions as `.frag` files**: a `custom/` folder of hydra-style
+  functions with a header giving class and inputs, loaded beside the JSON.
+
 ## Done in 0.2.0 (2026-10-06)
 
 The plan from 2026-10-06 — reduce to Compiled + Image — is implemented, and not
@@ -50,10 +95,3 @@ it could filter to the viewer flag — first print what `flag` contains in this 
 build. Keep the boundary-input count in the shader header: TD sizes
 `sTD2DInputs[]` at compile time and does not recompile when only the inputs
 change.
-
-### Drop the 0.2.0 migration
-
-`LEGACY_PARS` / `LEGACY_OPS` / `_drop_legacy` in `build_hydra.py`, the `coords` →
-`compiled` mapping in `_ensure_mode`, and the `hydra_coords` notice in `upgrade`
-can go once `version_report` shows nothing older than 0.2.0 anywhere — including
-the other `.toe` files and exported `.tox` trees.
